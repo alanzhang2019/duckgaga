@@ -1,0 +1,83 @@
+--- git commit ---
+6707b23eb381e82d4109303a318d6d9a780fb315
+
+
+--- git status ---
+On branch xgoduck
+Your branch is ahead of 'duckgaga/xgoduck' by 1 commit.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   docs/XGODUCK.md
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	checkpoints/xgoduck_velocity/
+	scripts/verify_velocity.py
+
+no changes added to commit (use "git add" and/or "git commit -a")
+
+--- git diff ---
+diff --git a/docs/XGODUCK.md b/docs/XGODUCK.md
+index 31eb458..14f994b 100644
+--- a/docs/XGODUCK.md
++++ b/docs/XGODUCK.md
+@@ -119,6 +119,7 @@ the checkpoint into it, so resuming never overwrites the source run.
+ |---|---|
+ | `scripts/watch_run.py` | convergence report from tfevents: real s/iter, whether the task metrics are still moving, NaN check. Exit 0 keep going / 1 plateaued / 2 broken. |
+ | `scripts/verify_standup.py` | measures trunk height and tilt from a trained policy and records a video. Reports a PASS/CHECK verdict. |
++| `scripts/verify_velocity.py` | replays a velocity policy against the commands it was given and compares its tracking error to a **do-nothing baseline**. Reports a PASS/CHECK verdict. |
+ 
+ Both exist because the obvious approaches lie:
+ 
+@@ -131,6 +132,18 @@ Both exist because the obvious approaches lie:
+ - The standing height is **task-specific** after retargeting. Read
+   `env_cfg.rewards["height_stand"].params["target_height"]`; hardcoding either
+   robot's value misreports the other by 20%.
++- `Metrics/twist/error_vel_xy` is **not** in m/s. `UniformVelocityCommand`
++  accumulates `‖cmd − v‖ / max_command_step` every step without dividing by the
++  episode length, so the logged number is a per-`max_command_time` sum: an
++  episode of 1000 steps at `resampling_time_range=(3, 8)` reports ~2.5x the
++  per-step mean. Divide by `episode_steps / max_command_steps` before quoting
++  it — or cross-check against the reward, which is per-step: with `std: 0.25`,
++  `Episode_Reward/track_linear_velocity = 2.23` of 3.0 means
++  `err = 0.25 * sqrt(-ln(2.23/3.0)) = 0.12 m/s`, i.e. a logged 0.296.
++- A velocity error is only meaningful next to the **command magnitude**. This
++  task commands `lin_vel_x ∈ ±0.4`, `lin_vel_y ∈ ±0.3`, so the mean command is
++  ~0.17 m/s and a policy that ignores the command entirely still scores ~0.17.
++  `verify_velocity.py` prints that baseline for exactly this reason.
+ 
+ ## Tests
+ 
+@@ -157,7 +170,28 @@ code ran, it just trained the wrong thing:
+ | Policy | State |
+ |---|---|
+ | StandUp | **trained and verified** — [checkpoints/xgoduck_standup](../checkpoints/xgoduck_standup/) |
+-| Velocity | trained in the pre-rebase fork, not yet re-run here |
++| Velocity | trained to 3000 iters here; **walks stably, tracks speed softly** — see below |
++
++### Velocity, measured
++
++3000 iterations at 4096 envs (3.1 s/iter, ~2.6 h total across two sittings).
++`verify_velocity.py` on 32 envs x 550 steps, pushes active:
++
++```
++height 0.141 m   tilt 2.4 deg   falls 0.0%
++lin_xy err 0.123 m/s   vs do-nothing baseline 0.173   (+29%)
++yaw      err 0.330 rad/s vs do-nothing baseline 0.374   (+12%)
++cmd 0.34 -> 0.27 m/s (78%)   cmd 0.11 -> 0.14 (drift floor 0.06)
++turn in place: wz 0.72 commanded -> 0.38 achieved
++```
++
++So it stands, walks, and points the body in the commanded direction without
++falling, but **regulates magnitude and yaw rate poorly** — half rate on turn-in-
++place. The reward explains why it stopped there: `track_linear_velocity`
++`std: 0.25` still pays 79% at the achieved 0.12 m/s error, and
++`track_angular_velocity` `std: 0.707` pays 49% at a 0.6 rad/s error. Tightening
++those two stds (0.15 / 0.4) and resuming is the cheap next step if this is to be
++distilled into VelStand as a teacher.
+ | SitStand, GroundPick, BallKick, Roulade, Swizzle | registered, smoke-tested, not trained |
+ 
+ **VelStand** (the velocity + stand-up distillation chain) is not ported yet, and
