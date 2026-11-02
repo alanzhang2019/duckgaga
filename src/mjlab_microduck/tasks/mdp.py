@@ -4782,25 +4782,72 @@ class VelocityCommandCommandOnly(UniformVelocityCommand):
         # spinning on the spot was effectively untrained → slow/unstable real-robot
         # turning. Mirrors the base rel_forward_envs mechanism.
         p = getattr(self.cfg, "rel_turn_in_place_envs", 0.0)
-        if p <= 0.0:
-            return
-        r = torch.empty(len(env_ids), device=self.device)
-        turn_ids = env_ids[r.uniform_(0.0, 1.0) < p]
-        if len(turn_ids) == 0:
-            return
-        self.vel_command_b[turn_ids, 0] = 0.0
-        self.vel_command_b[turn_ids, 1] = 0.0
-        lo, hi = self.cfg.ranges.ang_vel_z
-        maxr = max(abs(lo), abs(hi))
-        rr = torch.empty(len(turn_ids), device=self.device)
-        sign = torch.where(rr.uniform_(0.0, 1.0) < 0.5, -1.0, 1.0)
-        lo_frac = getattr(self.cfg, "turn_in_place_min_frac", 0.4)
-        mag = torch.empty(len(turn_ids), device=self.device).uniform_(lo_frac * maxr, maxr)
-        self.vel_command_b[turn_ids, 2] = sign * mag
-        # These envs must actually turn — un-mark them as standing (which would
-        # zero the command) and refresh the world-frame reference copy.
-        self.is_standing_env[turn_ids] = False
-        self.vel_command_w[turn_ids] = self.vel_command_b[turn_ids]
+        if p > 0.0:
+            # Draw from NON-standing envs only: taking turn slots out of the
+            # whole batch silently eats the standing curriculum's samples, so
+            # the standing fraction ends up below what the curriculum asked for.
+            eligible = env_ids[~self.is_standing_env[env_ids]]
+            r = torch.empty(len(eligible), device=self.device)
+            turn_ids = eligible[r.uniform_(0.0, 1.0) < p]
+            if len(turn_ids) > 0:
+                self.vel_command_b[turn_ids, 0] = 0.0
+                self.vel_command_b[turn_ids, 1] = 0.0
+                lo, hi = self.cfg.ranges.ang_vel_z
+                maxr = max(abs(lo), abs(hi))
+                rr = torch.empty(len(turn_ids), device=self.device)
+                sign = torch.where(rr.uniform_(0.0, 1.0) < 0.5, -1.0, 1.0)
+                lo_frac = getattr(self.cfg, "turn_in_place_min_frac", 0.4)
+                mag = torch.empty(len(turn_ids), device=self.device).uniform_(
+                    lo_frac * maxr, maxr
+                )
+                self.vel_command_b[turn_ids, 2] = sign * mag
+                # These envs must actually turn — un-mark them as standing (which
+                # would zero the command) and refresh the world-frame reference copy.
+                # The base sampler's heading/world/forward buckets are cleared too,
+                # or a turning env keeps a flag that rewrites its command later.
+                self.is_standing_env[turn_ids] = False
+                for flag in ("is_heading_env", "is_world_env", "is_forward_env"):
+                    buf = getattr(self, flag, None)
+                    if buf is not None:
+                        buf[turn_ids] = False
+                self.vel_command_w[turn_ids] = self.vel_command_b[turn_ids]
+
+        # XgoDuck: straight-backward practice. Applied AFTER the turn bucket so a
+        # turn assignment cannot be rewritten into a mixed command. Standing envs
+        # are left alone (they zero the command anyway). Upstream dropped
+        # rel_backward_envs entirely, which silently no-opped the fork's 15%
+        # reverse sampling: assigning the attribute on a dataclass without the
+        # field succeeds but changes nothing.
+        p_back = getattr(self.cfg, "rel_backward_envs", 0.0)
+        if p_back > 0.0:
+            eligible = env_ids[~self.is_standing_env[env_ids]]
+            if len(eligible) > 0:
+                back_ids = eligible[
+                    torch.rand(len(eligible), device=self.device) < p_back
+                ]
+                if len(back_ids) > 0:
+                    lo = max(
+                        self.cfg.backward_speed_range[0], self.cfg.ranges.lin_vel_x[0]
+                    )
+                    hi = min(
+                        self.cfg.backward_speed_range[1], self.cfg.ranges.lin_vel_x[1]
+                    )
+                    if not lo < hi < 0.0:
+                        raise ValueError(
+                            "Backward practice requires a nonempty negative speed range"
+                        )
+                    self.vel_command_b[back_ids, 0] = torch.empty(
+                        len(back_ids), device=self.device
+                    ).uniform_(lo, hi)
+                    self.vel_command_b[back_ids, 1:] = 0.0
+                    # Clear any bucket flags the base sampler may have set, so a
+                    # backward env is a pure straight-line command. Guarded by
+                    # hasattr: mjlab versions differ in which flags exist.
+                    for flag in ("is_heading_env", "is_world_env", "is_forward_env"):
+                        buf = getattr(self, flag, None)
+                        if buf is not None:
+                            buf[back_ids] = False
+                    self.vel_command_w[back_ids] = self.vel_command_b[back_ids]
 
     def _debug_vis_impl(self, visualizer: "DebugVisualizer") -> None:
         batch = visualizer.env_idx
@@ -4842,6 +4889,11 @@ class VelocityCommandCommandOnlyCfg(UniformVelocityCommandCfg):
     # 0.4 (historical) means in-place yaw below 0.4 rad/s is never trained (standing
     # envs zero the whole command; uniform sampling never gives lin == 0).
     turn_in_place_min_frac: float = 0.4
+    # XgoDuck: fraction of moving envs commanded to walk straight BACKWARD each
+    # resample, and the negative speed band they draw from. Upstream removed both
+    # fields; they are restored here so the fork's reverse practice works again.
+    rel_backward_envs: float = 0.0
+    backward_speed_range: tuple[float, float] = (-0.15, -0.05)
 
     def build(self, env: ManagerBasedRlEnv) -> "VelocityCommandCommandOnly":
         return VelocityCommandCommandOnly(self, env)
@@ -7288,7 +7340,12 @@ def _update_roulade_accum(env: ManagerBasedRlEnv, asset: Entity) -> None:
         delta = torch.nan_to_num(omega_fwd, nan=0.0) * env.step_dt
         supported = _sensor_any_contact(env, _ROULADE_SUPPORT_SENSOR)
         if supported is not None:
-            delta = delta * supported.float()
+            # FORWARD rotation only counts while supported (a ballistic flip
+            # earns nothing). BACKWARD rotation always counts, so "supported
+            # forward + airborne return" cannot ratchet the accumulator forward
+            # for free — that loop nets zero instead of one roll per cycle.
+            gate = torch.where(delta > 0, supported.float(), torch.ones_like(delta))
+            delta = delta * gate
         # Sagittal flatness gate (run-5): side/shoulder rolls don't count.
         y_z = torch.nan_to_num(_lateral_axis_z(asset.data.root_link_quat_w), nan=1.0).abs()
         t = torch.clamp((_FLAT_ZERO - y_z) / (_FLAT_ZERO - _FLAT_FULL), 0.0, 1.0)
