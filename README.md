@@ -1,5 +1,11 @@
 # Microduck RL
 
+> **This is a fork.** It adds the **XgoDuck** biped as a second robot — 13 extra
+> tasks (`Mjlab-*-XgoDuck`), an HLS1910 actuator model, an all-collisions MJCF,
+> and a trained, verified stand-up policy under [`checkpoints/`](checkpoints/).
+> Start with **[docs/XGODUCK.md](docs/XGODUCK.md)**. Everything below describes
+> the upstream MicroDuck environment this fork is built on.
+
 <img width="2215" height="884" alt="image" src="https://github.com/user-attachments/assets/5db7cc83-b3ce-4f7c-83f0-0572a63baed7" />
 
 
