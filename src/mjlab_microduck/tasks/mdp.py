@@ -7213,7 +7213,7 @@ def _head_top_down(env: ManagerBasedRlEnv, asset: Entity) -> torch.Tensor:
         env._roulade_head_body_id = ids[0]
     q = asset.data.body_link_quat_w[:, env._roulade_head_body_id]
     w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
-    a, b, c = _HEAD_TOP_AXIS
+    a, b, c = getattr(env, "_roulade_head_top_axis", _HEAD_TOP_AXIS)
     # z-component of R(q) @ axis_local
     axis_world_z = (
         2.0 * (x * z - w * y) * a + 2.0 * (y * z + w * x) * b + (1.0 - 2.0 * (x * x + y * y)) * c
@@ -7322,6 +7322,7 @@ def reset_roulade_state(
     tuck_overrides: Optional[dict] = None,
     tuck_factor_range: tuple = (0.3, 1.0),
     joint_noise_std: float = 0.0,
+    head_top_axis: tuple[float, float, float] = _HEAD_TOP_AXIS,
 ):
     """Reset to a standing start or a mid-roll state (reverse curriculum).
 
@@ -7344,6 +7345,8 @@ def reset_roulade_state(
     env_ids = env_ids.to(env.device, dtype=torch.long)
     num = len(env_ids)
     asset: Entity = env.scene[asset_cfg.name]
+    # Per-environment axis: robot variants must not mutate the shared default.
+    env._roulade_head_top_axis = head_top_axis
     accum, max_accum, paid = _roulade_state(env)
 
     total = standing_prob + midroll_prob
@@ -7511,6 +7514,7 @@ def roulade_landing_composite(
     gate_hi: float = math.radians(330.0),
     target_overrides: Optional[dict] = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    require_feet: bool = False,
 ) -> torch.Tensor:
     """standing_composite_score × completion gate.
 
@@ -7531,7 +7535,13 @@ def roulade_landing_composite(
         target_overrides=target_overrides,
         asset_cfg=asset_cfg,
     )
-    return score * _roulade_completion_gate(env, gate_lo, gate_hi, require_head=True)
+    score = score * _roulade_completion_gate(env, gate_lo, gate_hi, require_head=True)
+    # XgoDuck: finish ON BOTH FEET. Without the gate the roll can end balanced on
+    # the head or a knee and still collect the full annuity.
+    if require_feet:
+        found = env.scene.sensors["feet_ground_contact"].data.found
+        score = score * (found.reshape(env.num_envs, -1) > 0).all(dim=-1).float()
+    return score
 
 
 def roulade_upright_after_roll(
@@ -7581,6 +7591,7 @@ def roulade_landing_sharp(
     gate_lo: float = math.radians(260.0),
     gate_hi: float = math.radians(330.0),
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    require_feet: bool = False,
 ) -> torch.Tensor:
     """Tight-std upright × height Gaussians × completion gate — the last mile.
 
@@ -7600,6 +7611,10 @@ def roulade_landing_sharp(
     )
     height_g = torch.exp(-((z - target_height) / height_std) ** 2)
     gate = _roulade_completion_gate(env, gate_lo, gate_hi, require_head=True)
+    # XgoDuck: only pay the last mile when both feet are actually on the ground.
+    if require_feet:
+        found = env.scene.sensors["feet_ground_contact"].data.found
+        gate = gate * (found.reshape(env.num_envs, -1) > 0).all(dim=-1).float()
     return upright_g * height_g * gate
 
 

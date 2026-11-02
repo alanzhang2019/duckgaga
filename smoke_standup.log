@@ -1,0 +1,451 @@
+D:\dev\xgoduck_rl_v2\.venv\Lib\site-packages\tyro\_parsers.py:353: UserWarning: The field `env.scene.entities.robot.collisions.0.geom-names-expr` is annotated with type `tuple[str, ...]`, but the default value `['.*_collision']` has type `<class 'list'>`. We'll try to handle this gracefully, but it may cause unexpected behavior.
+  warnings.warn(message)
+D:\dev\xgoduck_rl_v2\.venv\Lib\site-packages\mjlab\entity\entity.py:149: UserWarning: Actuator config matched 14 joint(s) but the same expressions also match 7 site(s): imu, left_foot, head_camera, tof, head_imu, mouth_tip, right_foot. Add a separate config with transmission_type=TransmissionType.SITE if those should be actuated too.
+  self._add_actuators()
+[mdp] Patches 1-2 active: NaN-safe reward/advantage
+[mdp] Patch 4 active: ONNX export filters passive_* joints
+[mdp] Patch 5 active: MICRODUCK_WARM_START=1 restarts curricula after checkpoint load
+[INFO] Training with: device=cuda:0, seed=42, rank=0
+[INFO] Logging experiment in directory: logs\rsl_rl\xgoduck_standup\2026-11-02_19-20-17_xgoduck
+Setting seed: 42
+Warp 1.12.0 initialized:
+   CUDA Toolkit 12.9, Driver 13.3
+   Devices:
+     "cpu"      : "Intel64 Family 6 Model 151 Stepping 5, GenuineIntel"
+     "cuda:0"   : "NVIDIA GeForce RTX 4060" (8 GiB, sm_89, mempool enabled)
+   Kernel cache:
+     \\?\C:\Users\Administrator\AppData\Local\NVIDIA\warp\Cache\1.12.0
+Warp DeprecationWarning: The symbol `warp.context.runtime` will soon be removed from the public API. It can still be accessed from `warp._src.context.runtime` but might be changed or removed without notice.
+Module mujoco_warp._src.smooth 95a0b8b load on device 'cuda:0' took 53.88 ms  (cached)
+Module mujoco_warp._src.collision_driver 88f7770 load on device 'cuda:0' took 24.85 ms  (cached)
+Module _nxn_broadphase__locals__kernel_e73b1315 e73b131 load on device 'cuda:0' took 28.13 ms  (cached)
+Module ccd_kernel_builder__locals__ccd_kernel_079dfa94 079dfa9 load on device 'cuda:0' took 18944.65 ms  (compiled)
+Module _primitive_narrowphase__locals__primitive_narrowphase_b282a07a b282a07 load on device 'cuda:0' took 36.97 ms  (cached)
+Module mujoco_warp._src.constraint 27c5750 load on device 'cuda:0' took 40.11 ms  (cached)
+Module _efc_contact_init__locals__kernel_fda71e14 fda71e1 load on device 'cuda:0' took 27.04 ms  (cached)
+Module _efc_contact_jac_dense__locals__kernel_7974b597 cc0fc30 load on device 'cuda:0' took 26.88 ms  (cached)
+Module _efc_contact_update__locals__kernel_90315d53 90315d5 load on device 'cuda:0' took 27.71 ms  (cached)
+Module mujoco_warp._src.sensor 7fc0378 load on device 'cuda:0' took 41.53 ms  (cached)
+Module mujoco_warp._src.forward f60f76d load on device 'cuda:0' took 34.56 ms  (cached)
+Module mujoco_warp._src.passive 1a5e55c load on device 'cuda:0' took 55.78 ms  (cached)
+Module mujoco_warp._src.forward 8ebfcb1 load on device 'cuda:0' took 37.22 ms  (cached)
+Module mujoco_warp._src.support dd3f924 load on device 'cuda:0' took 25.75 ms  (cached)
+Module _tile_cholesky_factorize_solve__locals__cholesky_factorize_solve_b16bf393 b7e5d5f load on device 'cuda:0' took 77.88 ms  (cached)
+Module mujoco_warp._src.solver b116efb load on device 'cuda:0' took 34.14 ms  (cached)
+Module solve_init_jaref__locals__kernel_5208712d 5208712 load on device 'cuda:0' took 26.24 ms  (cached)
+Module mul_m_dense__locals___mul_m_dense_b66df345 b66df34 load on device 'cuda:0' took 30.05 ms  (cached)
+Module update_constraint_efc__locals__kernel_32935e9d 32935e9 load on device 'cuda:0' took 26.58 ms  (cached)
+Module update_constraint_gauss_cost__locals__kernel_baf8e129 baf8e12 load on device 'cuda:0' took 25.69 ms  (cached)
+Module update_gradient_JTDAJ_dense_tiled__locals__kernel_9404d42c b63011f load on device 'cuda:0' took 27.24 ms  (cached)
+Module update_gradient_cholesky__locals__kernel_5ee47d83 324a2ff load on device 'cuda:0' took 73.96 ms  (cached)
+Module linesearch_jv_fused__locals__kernel_7bf09094 7bf0909 load on device 'cuda:0' took 26.32 ms  (cached)
+Module linesearch_prepare_gauss__locals__kernel_97347d38 97347d3 load on device 'cuda:0' took 27.68 ms  (cached)
+Module update_constraint_efc__locals__kernel_3c1a9816 3c1a981 load on device 'cuda:0' took 27.55 ms  (cached)
+Module _contact_sort__locals__contact_sort_304c86df 6c97b35 load on device 'cuda:0' took 32.85 ms  (cached)
+Module mujoco_warp._src.derivative d0e2fd7 load on device 'cuda:0' took 29.85 ms  (cached)
+Module reset_data__locals__reset_xfrc_applied_e7898c5c e7898c5 load on device 'cuda:0' took 25.89 ms  (cached)
+Module reset_data__locals__reset_qM_10d3c793 10d3c79 load on device 'cuda:0' took 25.28 ms  (cached)
+Module reset_data__locals__reset_mocap_ff71f630 ff71f63 load on device 'cuda:0' took 62.19 ms  (cached)
+Module reset_data__locals__reset_contact_df686d47 df686d4 load on device 'cuda:0' took 32.34 ms  (cached)
+Module reset_data__locals__reset_nworld_6e0d904e 6e0d904 load on device 'cuda:0' took 34.28 ms  (cached)
+[BamActuator] model='m6' joints=14 kt=0.6238 R=4.9102 vin=range=(7.4, 8.0) drop_gain_range=(0.0, 0.2) force_limit=±1.02Nm friction_base=0.0158 friction_viscous=0.0003 envs=16 device=cuda:0
+
++---------------------------------+
+|         Base Environment        |
++------------------------+--------+
+| Property               | Value  |
++------------------------+--------+
+| Number of environments | 16     |
+| Environment device     | cuda:0 |
+| Environment seed       | 42     |
+| Physics step-size      | 0.004  |
+| Environment step-size  | 0.02   |
++------------------------+--------+
+
+[INFO] <EventManager> contains 3 active terms.
++-------------------------------------+
+| Active Event Terms in Mode: 'reset' |
++-------+-----------------------------+
+| Index | Name                        |
++-------+-----------------------------+
+|   0   | reset_base                  |
+|   1   | reset_robot_joints          |
+|   2   | reset_action_history        |
+|   3   | set_ground_state            |
+|   4   | randomize_com               |
+|   5   | randomize_head_com          |
+|   6   | randomize_armature          |
+|   7   | randomize_joint_friction    |
++-------+-----------------------------+
++----------------------------------------------+
+|    Active Event Terms in Mode: 'interval'    |
++-------+------------+-------------------------+
+| Index | Name       | Interval time range (s) |
++-------+------------+-------------------------+
+|   0   | push_robot |        (3.0, 6.0)       |
++-------+------------+-------------------------+
++---------------------------------------+
+| Active Event Terms in Mode: 'startup' |
++-------+-------------------------------+
+| Index | Name                          |
++-------+-------------------------------+
+|   0   | foot_friction                 |
+|   1   | encoder_bias                  |
+|   2   | base_com                      |
+|   3   | expand_bam_friction_fields    |
++-------+-------------------------------+
++-----------------------------+
+| Domain Randomization Fields |
++-------+---------------------+
+| Index | Field Name          |
++-------+---------------------+
+|   0   | geom_friction       |
+|   1   | body_ipos           |
+|   2   | body_subtreemass    |
+|   3   | dof_invweight0      |
+|   4   | body_invweight0     |
+|   5   | tendon_length0      |
+|   6   | tendon_invweight0   |
+|   7   | dof_frictionloss    |
+|   8   | dof_damping         |
+|   9   | dof_armature        |
++-------+---------------------+
+
+Module repeat_array_kernel_39317a34 b712927 load on device 'cuda:0' took 28.26 ms  (cached)
+Module repeat_array_kernel_39317a34 b699bd8 load on device 'cuda:0' took 202.77 ms  (compiled)
+Module repeat_array_kernel_39317a34 363ede1 load on device 'cuda:0' took 204.93 ms  (compiled)
+[INFO] <CommandManager> contains 3 active terms.
++------------------------------------------------+
+|              Active Command Terms              |
++-------+-----------+----------------------------+
+| Index | Name      |            Type            |
++-------+-----------+----------------------------+
+|   0   | twist     | VelocityCommandCommandOnly |
+|   1   | head_pose |     UniformPoseCommand     |
+|   2   | body_pose |     UniformPoseCommand     |
++-------+-----------+----------------------------+
+
+[INFO] <ActionManager> contains 1 active terms.
++---------------------------------+
+| Active Action Terms (shape: 14) |
++-------+-----------+-------------+
+| Index | Name      |   Dimension |
++-------+-----------+-------------+
+|   0   | joint_pos |          14 |
++-------+-----------+-------------+
+
+[INFO] <ObservationManager> contains 2 groups.
++-----------------------------------------------------------+
+| Active Observation Terms in Group: 'actor' (shape: (61,)) |
++-----------+----------------------------------+------------+
+|   Index   | Name                             |   Shape    |
++-----------+----------------------------------+------------+
+|     0     | base_ang_vel                     |    (3,)    |
+|     1     | projected_gravity                |    (3,)    |
+|     2     | joint_pos                        |   (14,)    |
+|     3     | joint_vel                        |   (14,)    |
+|     4     | actions                          |   (14,)    |
+|     5     | command                          |    (3,)    |
+|     6     | head_command                     |    (4,)    |
+|     7     | body_command                     |    (6,)    |
++-----------+----------------------------------+------------+
++------------------------------------------------------------+
+| Active Observation Terms in Group: 'critic' (shape: (74,)) |
++----------+------------------------------------+------------+
+|  Index   | Name                               |   Shape    |
++----------+------------------------------------+------------+
+|    0     | base_lin_vel                       |    (3,)    |
+|    1     | base_ang_vel                       |    (3,)    |
+|    2     | projected_gravity                  |    (3,)    |
+|    3     | joint_pos                          |   (14,)    |
+|    4     | joint_vel                          |   (14,)    |
+|    5     | actions                            |   (14,)    |
+|    6     | command                            |    (3,)    |
+|    7     | foot_air_time                      |    (2,)    |
+|    8     | foot_contact                       |    (2,)    |
+|    9     | foot_contact_forces                |    (6,)    |
+|    10    | head_command                       |    (4,)    |
+|    11    | body_command                       |    (6,)    |
++----------+------------------------------------+------------+
+
+[INFO] <TerminationManager> contains 3 active terms.
++------------------------------------------+
+|         Active Termination Terms         |
++-------+-----------------------+----------+
+| Index | Name                  | Time Out |
++-------+-----------------------+----------+
+|   0   | time_out              |   True   |
+|   1   | out_of_terrain_bounds |   True   |
+|   2   | nan_state             |  False   |
++-------+-----------------------+----------+
+
+[INFO] <RewardManager> contains 20 active terms.
++---------------------------------------+
+|          Active Reward Terms          |
++-------+----------------------+--------+
+| Index | Name                 | Weight |
++-------+----------------------+--------+
+|   0   | body_ang_vel         |  -0.05 |
+|   1   | angular_momentum     |  -0.02 |
+|   2   | dof_pos_limits       |   -1.0 |
+|   3   | action_rate_l2       |   -0.1 |
+|   4   | pose_stand_legs      |    2.0 |
+|   5   | head_pose_tracking   |   0.75 |
+|   6   | head_pose_bias       |    0.0 |
+|   7   | pose_stand_l1        |   1.25 |
+|   8   | height_stand         |    1.0 |
+|   9   | height_stand_sharp   |    1.0 |
+|   10  | height_stand_l1      |    7.5 |
+|   11  | com_upward_velocity  |   0.75 |
+|   12  | gentle_rise          |  0.005 |
+|   13  | arrival_damping      |    0.0 |
+|   14  | upright_linear       |    1.5 |
+|   15  | upright_sharp        |    1.5 |
+|   16  | standing_composite   |   3.75 |
+|   17  | body_pose_tracking   |    0.0 |
+|   18  | joint_torque_rate_l2 |    0.0 |
+|   19  | self_collisions      |   -1.0 |
++-------+----------------------+--------+
+
+[INFO] <CurriculumManager> contains 13 active terms.
++-----------------------------------+
+|      Active Curriculum Terms      |
++-------+---------------------------+
+| Index | Name                      |
++-------+---------------------------+
+|   0   | head_pose_range           |
+|   1   | com_range                 |
+|   2   | head_com_range            |
+|   3   | push_magnitude            |
+|   4   | action_rate_weight        |
+|   5   | arrival_damping_weight    |
+|   6   | head_pose_bias_weight     |
+|   7   | torque_rate_weight        |
+|   8   | body_pose_tracking_weight |
+|   9   | body_pose_range           |
+|   10  | height_stand_sharp_weight |
+|   11  | upright_sharp_weight      |
+|   12  | standing_composite_weight |
++-------+---------------------------+
+
+[INFO] <MetricsManager> contains 1 active terms.
++-------------------------+
+|   Active Metrics Terms  |
++-------+-----------------+
+| Index | Name            |
++-------+-----------------+
+|   0   | mean_action_acc |
++-------+-----------------+
+
+[INFO] <NullRecorderManager> (inactive)
+Module mujoco_warp._src.io 4b387a0 load on device 'cuda:0' took 35.56 ms  (cached)
+Module _tile_cholesky_factorize__locals__cholesky_factorize_a02b7349 3d3b894 load on device 'cuda:0' took 66.73 ms  (cached)
+Module _tile_cholesky_solve__locals__cholesky_solve_8c82e9f1 95f6085 load on device 'cuda:0' took 58.38 ms  (cached)
+--------------------------------------------------------------------------------
+Resolved observation sets: 
+	 actor :  ('actor',)
+	 critic :  ('critic',)
+--------------------------------------------------------------------------------
+Actor Model: MLPModel(
+  (obs_normalizer): EmpiricalNormalization()
+  (distribution): GaussianDistribution()
+  (mlp): MLP(
+    (0): Linear(in_features=61, out_features=512, bias=True)
+    (1): ELU(alpha=1.0)
+    (2): Linear(in_features=512, out_features=256, bias=True)
+    (3): ELU(alpha=1.0)
+    (4): Linear(in_features=256, out_features=128, bias=True)
+    (5): ELU(alpha=1.0)
+    (6): Linear(in_features=128, out_features=14, bias=True)
+  )
+)
+Critic Model: MLPModel(
+  (obs_normalizer): EmpiricalNormalization()
+  (mlp): MLP(
+    (0): Linear(in_features=74, out_features=512, bias=True)
+    (1): ELU(alpha=1.0)
+    (2): Linear(in_features=512, out_features=256, bias=True)
+    (3): ELU(alpha=1.0)
+    (4): Linear(in_features=256, out_features=128, bias=True)
+    (5): ELU(alpha=1.0)
+    (6): Linear(in_features=128, out_features=1, bias=True)
+  )
+)
+Storing git diff for 'xgoduck_rl_v2' in: logs\rsl_rl\xgoduck_standup\2026-11-02_19-20-17_xgoduck\git\xgoduck_rl_v2.diff
+################################################################################
+[1m                             Learning iteration 0/3                             [0m 
+
+                               Run name: xgoduck
+                            Total steps: 384 
+                       Steps per second: 250 
+                        Collection time: 1.351s 
+                          Learning time: 0.184s 
+                        Mean value loss: 0.1422
+                    Mean surrogate loss: -0.0759
+                      Mean entropy loss: 19.8569
+                            Mean reward: -0.77
+                    Mean episode length: 20.00
+                        Mean action std: 1.00
+            Episode_Reward/body_ang_vel: -0.0083
+        Episode_Reward/angular_momentum: -0.0000
+          Episode_Reward/dof_pos_limits: -0.0004
+          Episode_Reward/action_rate_l2: -0.0273
+         Episode_Reward/pose_stand_legs: 0.0174
+      Episode_Reward/head_pose_tracking: 0.0055
+          Episode_Reward/head_pose_bias: 0.0000
+           Episode_Reward/pose_stand_l1: -0.0024
+            Episode_Reward/height_stand: 0.0015
+      Episode_Reward/height_stand_sharp: 0.0004
+         Episode_Reward/height_stand_l1: -0.0053
+     Episode_Reward/com_upward_velocity: 0.0003
+             Episode_Reward/gentle_rise: -0.0005
+         Episode_Reward/arrival_damping: 0.0000
+          Episode_Reward/upright_linear: -0.0009
+           Episode_Reward/upright_sharp: 0.0000
+      Episode_Reward/standing_composite: 0.0000
+      Episode_Reward/body_pose_tracking: 0.0000
+    Episode_Reward/joint_torque_rate_l2: 0.0000
+         Episode_Reward/self_collisions: 0.0000
+        Episode_Metrics/mean_action_acc: 0.4066
+             Curriculum/head_pose_range: 0.0700
+                   Curriculum/com_range: 0.0030
+              Curriculum/head_com_range: 0.0030
+              Curriculum/push_magnitude: 0.0000
+          Curriculum/action_rate_weight: -0.1000
+      Curriculum/arrival_damping_weight: 0.0000
+       Curriculum/head_pose_bias_weight: 0.0000
+          Curriculum/torque_rate_weight: 0.0000
+   Curriculum/body_pose_tracking_weight: 0.0000
+             Curriculum/body_pose_range: 0.0500
+   Curriculum/height_stand_sharp_weight: 1.0000
+        Curriculum/upright_sharp_weight: 1.5000
+   Curriculum/standing_composite_weight: 3.7500
+             Metrics/twist/error_vel_xy: 0.0039
+            Metrics/twist/error_vel_yaw: 0.0184
+           Episode_Termination/time_out: 0.2083
+Episode_Termination/out_of_terrain_bounds: 0.0000
+          Episode_Termination/nan_state: 0.0000
+          Metrics/angular_momentum_mean: 0.0102
+--------------------------------------------------------------------------------
+                         Iteration time: 1.53s
+                           Time elapsed: 00:00:01
+                                    ETA: 00:00:03
+
+################################################################################
+[1m                             Learning iteration 1/3                             [0m 
+
+                               Run name: xgoduck
+                            Total steps: 768 
+                       Steps per second: 293 
+                        Collection time: 1.182s 
+                          Learning time: 0.128s 
+                        Mean value loss: 0.0968
+                    Mean surrogate loss: -0.1021
+                      Mean entropy loss: 19.8578
+                            Mean reward: -1.16
+                    Mean episode length: 27.50
+                        Mean action std: 1.00
+            Episode_Reward/body_ang_vel: -0.0376
+        Episode_Reward/angular_momentum: -0.0000
+          Episode_Reward/dof_pos_limits: -0.0032
+          Episode_Reward/action_rate_l2: -0.1970
+         Episode_Reward/pose_stand_legs: 0.1163
+      Episode_Reward/head_pose_tracking: 0.0406
+          Episode_Reward/head_pose_bias: 0.0000
+           Episode_Reward/pose_stand_l1: -0.0183
+            Episode_Reward/height_stand: 0.0069
+      Episode_Reward/height_stand_sharp: 0.0020
+         Episode_Reward/height_stand_l1: -0.0433
+     Episode_Reward/com_upward_velocity: 0.0017
+             Episode_Reward/gentle_rise: -0.0031
+         Episode_Reward/arrival_damping: 0.0000
+          Episode_Reward/upright_linear: -0.0182
+           Episode_Reward/upright_sharp: 0.0000
+      Episode_Reward/standing_composite: 0.0001
+      Episode_Reward/body_pose_tracking: 0.0000
+    Episode_Reward/joint_torque_rate_l2: 0.0000
+         Episode_Reward/self_collisions: 0.0000
+        Episode_Metrics/mean_action_acc: 1.9604
+             Curriculum/head_pose_range: 0.0700
+                   Curriculum/com_range: 0.0030
+              Curriculum/head_com_range: 0.0030
+              Curriculum/push_magnitude: 0.0000
+          Curriculum/action_rate_weight: -0.1000
+      Curriculum/arrival_damping_weight: 0.0000
+       Curriculum/head_pose_bias_weight: 0.0000
+          Curriculum/torque_rate_weight: 0.0000
+   Curriculum/body_pose_tracking_weight: 0.0000
+             Curriculum/body_pose_range: 0.0500
+   Curriculum/height_stand_sharp_weight: 1.0000
+        Curriculum/upright_sharp_weight: 1.5000
+   Curriculum/standing_composite_weight: 3.7500
+             Metrics/twist/error_vel_xy: 0.0194
+            Metrics/twist/error_vel_yaw: 0.0819
+           Episode_Termination/time_out: 1.0000
+Episode_Termination/out_of_terrain_bounds: 0.0000
+          Episode_Termination/nan_state: 0.0000
+          Metrics/angular_momentum_mean: 0.0076
+--------------------------------------------------------------------------------
+                         Iteration time: 1.31s
+                           Time elapsed: 00:00:02
+                                    ETA: 00:00:01
+
+################################################################################
+[1m                             Learning iteration 2/3                             [0m 
+
+                               Run name: xgoduck
+                            Total steps: 1152 
+                       Steps per second: 418 
+                        Collection time: 0.758s 
+                          Learning time: 0.160s 
+                        Mean value loss: 0.1376
+                    Mean surrogate loss: -0.1101
+                      Mean entropy loss: 19.8588
+                            Mean reward: -1.57
+                    Mean episode length: 39.00
+                        Mean action std: 1.00
+            Episode_Reward/body_ang_vel: -0.0842
+        Episode_Reward/angular_momentum: -0.0000
+          Episode_Reward/dof_pos_limits: -0.0053
+          Episode_Reward/action_rate_l2: -0.3237
+         Episode_Reward/pose_stand_legs: 0.1902
+      Episode_Reward/head_pose_tracking: 0.0721
+          Episode_Reward/head_pose_bias: 0.0000
+           Episode_Reward/pose_stand_l1: -0.0308
+            Episode_Reward/height_stand: 0.0102
+      Episode_Reward/height_stand_sharp: 0.0023
+         Episode_Reward/height_stand_l1: -0.0673
+     Episode_Reward/com_upward_velocity: 0.0039
+             Episode_Reward/gentle_rise: -0.0039
+         Episode_Reward/arrival_damping: 0.0000
+          Episode_Reward/upright_linear: -0.0055
+           Episode_Reward/upright_sharp: 0.0000
+      Episode_Reward/standing_composite: 0.0001
+      Episode_Reward/body_pose_tracking: 0.0000
+    Episode_Reward/joint_torque_rate_l2: 0.0000
+         Episode_Reward/self_collisions: 0.0000
+        Episode_Metrics/mean_action_acc: 1.9271
+             Curriculum/head_pose_range: 0.0700
+                   Curriculum/com_range: 0.0030
+              Curriculum/head_com_range: 0.0030
+              Curriculum/push_magnitude: 0.0000
+          Curriculum/action_rate_weight: -0.1000
+      Curriculum/arrival_damping_weight: 0.0000
+       Curriculum/head_pose_bias_weight: 0.0000
+          Curriculum/torque_rate_weight: 0.0000
+   Curriculum/body_pose_tracking_weight: 0.0000
+             Curriculum/body_pose_range: 0.0500
+   Curriculum/height_stand_sharp_weight: 1.0000
+        Curriculum/upright_sharp_weight: 1.5000
+   Curriculum/standing_composite_weight: 3.7500
+             Metrics/twist/error_vel_xy: 0.0239
+            Metrics/twist/error_vel_yaw: 0.1693
+           Episode_Termination/time_out: 1.0000
+Episode_Termination/out_of_terrain_bounds: 0.0000
+          Episode_Termination/nan_state: 0.0000
+          Metrics/angular_momentum_mean: 0.0072
+--------------------------------------------------------------------------------
+                         Iteration time: 0.92s
+                           Time elapsed: 00:00:03
+                                    ETA: 00:00:00
+
