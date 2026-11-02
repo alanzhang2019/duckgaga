@@ -24,41 +24,90 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 DEFAULT_EXPERIMENT = "xgoduck_standup"
 
-# The standup recipe's own signals: `standing_composite` is the one that says
-# "it got up and stayed up"; `time_out` says "episodes are surviving to the
-# end" rather than ending early; `com_upward_velocity` is the discovery term
-# and goes quiet once the motion is learned.
-DEFAULT_KEYS = (
-    "Episode_Reward/standing_composite",
-    "Episode_Reward/upright_sharp",
-    "Episode_Reward/height_stand_sharp",
-    "Episode_Reward/com_upward_velocity",
-    "Episode_Reward/arrival_damping",
-    "Episode_Termination/time_out",
+# Per-task signal preferences, tried in order; the first tuple whose leading
+# entry exists in the run wins. Keeping them here (rather than defaulting to one
+# task's list) is what stops the report from showing a single `time_out` column
+# after you switch tasks.
+KEY_PREFERENCES = (
+    # standup: `standing_composite` is the one that says "it got up and stayed
+    # up"; `time_out` says episodes survive to the end rather than ending early.
+    (
+        "Episode_Reward/standing_composite",
+        "Episode_Reward/upright_sharp",
+        "Episode_Reward/height_stand_sharp",
+        "Episode_Reward/com_upward_velocity",
+        "Episode_Termination/time_out",
+    ),
+    # velocity / velstand: tracking rewards up, tracking error down, and falls
+    # are the thing that must go to zero.
+    (
+        "Episode_Reward/track_linear_velocity",
+        "Episode_Reward/track_angular_velocity",
+        "Metrics/twist/error_vel_xy",
+        "Episode_Termination/fell_over",
+    ),
 )
 
+# Metrics where DOWN is better. Without this the verdict reads a falling
+# tracking error as "not improving" and calls a healthy run plateaued.
+LOWER_IS_BETTER = ("Metrics/", "Episode_Termination/")
 
-def latest_run(experiment, index=0):
-    runs = sorted(
-        (
-            d
-            for d in glob.glob(os.path.join("logs", "rsl_rl", experiment, "*"))
-            if os.path.isdir(d) and glob.glob(os.path.join(d, "events.out.tfevents.*"))
-        ),
-        key=os.path.getmtime,
-        reverse=True,
-    )
+
+def latest_run(experiment=None, index=0):
+    """Newest run by EVENT-FILE mtime, across all experiments when unspecified.
+
+    Two things this deliberately does not do:
+      - default to one hardcoded experiment. Whichever task is training right
+        now is the one you want, and after switching tasks the old default
+        silently reported a finished run as if it were the live one.
+      - key on the run directory's mtime. A directory's mtime only moves when
+        an entry is added or removed, so a run that is actively appending to
+        its event file but not yet checkpointing looks stale.
+    """
+    pattern = os.path.join("logs", "rsl_rl", experiment or "*", "*")
+    runs = []
+    for d in glob.glob(pattern):
+        if not os.path.isdir(d):
+            continue
+        events = glob.glob(os.path.join(d, "events.out.tfevents.*"))
+        if events:
+            runs.append((max(os.path.getmtime(e) for e in events), d))
+    runs.sort(reverse=True)
     if not runs:
-        sys.exit(f"no run with an event file under logs/rsl_rl/{experiment}/")
+        where = f"logs/rsl_rl/{experiment}/" if experiment else "logs/rsl_rl/"
+        sys.exit(f"no run with an event file under {where}")
     if index >= len(runs):
-        sys.exit(f"only {len(runs)} run(s) under logs/rsl_rl/{experiment}/")
-    return runs[index]
+        sys.exit(f"only {len(runs)} run(s) under {pattern}")
+    return runs[index][1]
 
 
 def series(ea, tag):
     if tag not in ea.Tags()["scalars"]:
         return []
     return [(e.step, e.value) for e in ea.Scalars(tag)]
+
+
+def pick_keys(ea):
+    """Task-appropriate signals, without being told which task this is.
+
+    Prefers a known recipe; for an unknown task falls back to the reward terms
+    that actually moved, which is usually where the learning is happening.
+    """
+    tags = set(ea.Tags()["scalars"])
+    for pref in KEY_PREFERENCES:
+        if pref[0] in tags:
+            return [k for k in pref if k in tags]
+    scored = []
+    for t in tags:
+        if not t.startswith("Episode_Reward/"):
+            continue
+        pts = series(ea, t)
+        if len(pts) < 2:
+            continue
+        a, b = pts[0][1], pts[-1][1]
+        scored.append((abs(b - a) / max(abs(a), abs(b), 1e-6), t))
+    scored.sort(reverse=True)
+    return [t for _, t in scored[:5]]
 
 
 def at(points, step):
@@ -85,9 +134,15 @@ def pct_change(points, window):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("-e", "--experiment", default=DEFAULT_EXPERIMENT)
+    ap.add_argument(
+        "-e", "--experiment", default=None,
+        help="experiment name; omit to pick the newest run across ALL experiments",
+    )
     ap.add_argument("-n", "--index", type=int, default=0, help="0 = newest run")
-    ap.add_argument("--keys", nargs="*", default=list(DEFAULT_KEYS))
+    ap.add_argument(
+        "--keys", nargs="*", default=None,
+        help="explicit metric names; omit to auto-pick for the task",
+    )
     ap.add_argument("--window", type=int, default=300, help="plateau window (iters)")
     ap.add_argument("--tol", type=float, default=0.05, help="plateau threshold")
     ap.add_argument("--cols", type=int, default=6, help="sample columns")
@@ -99,6 +154,8 @@ def main():
     tags = ea.Tags()["scalars"]
     if not tags:
         sys.exit(f"{run}: event file has no scalars yet (still warming up)")
+
+    keys = args.keys or pick_keys(ea)
 
     # Every tag is logged once per iteration, so the longest series doubles as
     # the iteration counter (rsl_rl does not log one explicitly).
@@ -140,7 +197,7 @@ def main():
     print(header)
     print("-" * len(header))
     verdict = []
-    for key in args.keys:
+    for key in keys:
         pts = series(ea, key)
         if not pts:
             continue
@@ -153,7 +210,13 @@ def main():
         verdict.append((key, pct_change(pts, args.window)))
 
     print()
-    measured = [(k, ch) for k, ch in verdict if ch is not None]
+    # Signed so "up" always means "better": a falling tracking error is
+    # progress, not a stall, and `fell_over` going down is the whole point.
+    measured = [
+        (k, -ch if k.startswith(LOWER_IS_BETTER) else ch)
+        for k, ch in verdict
+        if ch is not None
+    ]
     for key, ch in verdict:
         if ch is None:
             print(f"  {key}: no {args.window}-iter history yet")
