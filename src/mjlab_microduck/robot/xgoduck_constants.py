@@ -15,6 +15,7 @@ from pathlib import Path
 
 import mujoco
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
+from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.utils.spec_config import CollisionCfg
 
 from mjlab_microduck.actuator import FrictionDRBamActuatorCfg
@@ -88,6 +89,68 @@ XGODUCK_COLLISION = CollisionCfg(
     priority={r"^(left|right)_foot_collision$": 1},
     friction={r"^(left|right)_foot_collision$": (1.0,)},
 )
+
+# ── Servo shells for impact costing ──────────────────────────────────────────
+# MicroDuck's export keeps the XL330 housing as its own mesh, so upstream's
+# `name_servo_collision_geoms` can name those housings and `servo_impact` can
+# put a contact sensor on the servo itself. The XgoDuck export collapses each
+# link into a SINGLE collision hull that already encloses its servo, so there is
+# no separate housing mesh to name — the servo shell IS the link hull. The set
+# therefore has to be stated by geom name, and it has to be a PARTITION or the
+# protection costs double-bill the same contact:
+#
+#   feet      left/right_foot_collision   the soles. Ground contact by design,
+#                                         and they carry the condim-3 friction
+#                                         pair; billing them taxes walking.
+#   head/neck neck / head_pitch / head_yaw / head_collision
+#                                         priced by `head_impact`, which matches
+#                                         HEAD_BODY_NAMES on the body.
+#   trunk     trunk_collision             priced by `trunk_impact`.
+#   servos    the 8 leg hulls below       priced by `servo_impact`.
+#
+# A fall drives the hip yaw/roll, thigh and shin hulls into the floor — those are
+# the servos that strip gears — and none of them touches the ground while
+# standing, so the cost is ~0 during clean walking.
+XGODUCK_SERVO_SHELL_GEOMS: tuple[str, ...] = (
+    "left_hip_yaw_collision",
+    "left_hip_roll_collision",
+    "left_thigh_collision",
+    "left_shin_collision",
+    "right_hip_yaw_collision",
+    "right_hip_roll_collision",
+    "right_thigh_collision",
+    "right_shin_collision",
+)
+
+XGODUCK_SERVO_GEOM_PATTERN = r"^(?:" + "|".join(XGODUCK_SERVO_SHELL_GEOMS) + r")$"
+XGODUCK_HEAD_GEOM_PATTERN = r"^(?:neck|head_pitch|head_yaw|head)_collision$"
+XGODUCK_TRUNK_GEOM_PATTERN = r"^trunk_collision$"
+
+
+def make_xgoduck_contact_sensors() -> tuple[ContactSensorCfg, ...]:
+    """servo / head / trunk ground-contact sensors for the protective-fall tasks.
+
+    Mirrors upstream VelStand's trio, except that the servo pattern comes from
+    :data:`XGODUCK_SERVO_SHELL_GEOMS` instead of the `xl330` housing mesh. The
+    three patterns are disjoint by construction, so one contact is never billed
+    by two costs.
+    """
+
+    def _sensor(name: str, geom_pattern: str) -> ContactSensorCfg:
+        return ContactSensorCfg(
+            name=name,
+            primary=ContactMatch(mode="geom", pattern=geom_pattern, entity="robot"),
+            secondary=ContactMatch(mode="body", pattern="terrain"),
+            fields=("force",),
+            reduce="netforce",
+            num_slots=1,
+        )
+
+    return (
+        _sensor("servo_ground_contact", XGODUCK_SERVO_GEOM_PATTERN),
+        _sensor("head_ground_contact", XGODUCK_HEAD_GEOM_PATTERN),
+        _sensor("trunk_ground_contact", XGODUCK_TRUNK_GEOM_PATTERN),
+    )
 
 # HLS1910 identification (sts3215 firmware). max_velocity=100 disables the
 # firmware goal-slew so speed comes from voltage + back-EMF.

@@ -1,5 +1,7 @@
 """XGODUCK collisions: every link vs ground; only head_roll vs base self-collides."""
 
+import re
+
 import mujoco
 
 import mjlab_microduck.tasks  # noqa: F401
@@ -7,7 +9,12 @@ from mjlab.tasks.registry import load_env_cfg
 from mjlab_microduck.robot.xgoduck_constants import (
     XGODUCK_ALLCOLLISIONS_XML,
     XGODUCK_COLLISION,
+    XGODUCK_HEAD_GEOM_PATTERN,
+    XGODUCK_SERVO_GEOM_PATTERN,
+    XGODUCK_SERVO_SHELL_GEOMS,
+    XGODUCK_TRUNK_GEOM_PATTERN,
     XGODUCK_WALK_XML,
+    make_xgoduck_contact_sensors,
 )
 
 # Standup/allcollisions: every link has a named *_collision mesh for floor
@@ -106,3 +113,105 @@ def test_xgoduck_standup_task_enables_head_base_self_collision():
     col = cfg.scene.entities["robot"].collisions[0]
     assert col.contype["^(trunk_collision|head_collision)$"] == 3
     assert col.conaffinity["^(trunk_collision|head_collision)$"] == 2
+
+
+# ── Servo shells (the handle the protective-fall costs need) ─────────────────
+# XgoDuck has no separate servo housing mesh the way MicroDuck has `xl330`: each
+# link's single collision hull encloses its servo. The three protection costs
+# therefore have to partition the 15 collision geoms by name, and the partition
+# is the thing worth testing — a shared geom means one contact billed twice, a
+# missing one means an unprotected servo.
+
+
+def _geom_body(model, geom_name: str) -> str:
+    gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+    assert gid >= 0, f"no geom named {geom_name!r}"
+    return mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[gid])
+
+
+def _body_hinge_joints(model, body_name: str) -> list[str]:
+    bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+    assert bid >= 0, f"no body named {body_name!r}"
+    out = []
+    for k in range(int(model.body_jntnum[bid])):
+        jid = int(model.body_jntadr[bid]) + k
+        if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_HINGE:
+            out.append(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid))
+    return out
+
+
+def test_servo_head_trunk_sets_partition_the_collision_geoms():
+    """Every collision geom belongs to exactly one protection cost."""
+    servo = set(XGODUCK_SERVO_SHELL_GEOMS)
+    head = {n for n in STANDUP_WORLD_COLLISION_GEOMS if re.fullmatch(XGODUCK_HEAD_GEOM_PATTERN, n)}
+    trunk = {n for n in STANDUP_WORLD_COLLISION_GEOMS if re.fullmatch(XGODUCK_TRUNK_GEOM_PATTERN, n)}
+    feet = {n for n in STANDUP_WORLD_COLLISION_GEOMS if n.endswith("_foot_collision")}
+
+    assert trunk == {"trunk_collision"}
+    assert feet == {"left_foot_collision", "right_foot_collision"}
+    assert head == {
+        "neck_collision", "head_pitch_collision", "head_yaw_collision", "head_collision",
+    }, f"head pattern picked up {sorted(head)}"
+    assert len(servo) == 8
+
+    # Disjoint, and together they account for all 15 hulls with nothing left over.
+    groups = {"servo": servo, "head": head, "trunk": trunk, "feet": feet}
+    for a in groups:
+        for b in groups:
+            if a < b:
+                assert not (groups[a] & groups[b]), f"{a} and {b} overlap: {groups[a] & groups[b]}"
+    assert set().union(*groups.values()) == set(STANDUP_WORLD_COLLISION_GEOMS)
+
+
+def test_servo_shell_geoms_are_actuated_links_and_never_the_soles():
+    """The set must be exactly the leg servos whose hulls a fall drives down."""
+    model = _compile_with_collision(XGODUCK_ALLCOLLISIONS_XML, XGODUCK_COLLISION)
+
+    for name in XGODUCK_SERVO_SHELL_GEOMS:
+        body = _geom_body(model, name)
+        joints = _body_hinge_joints(model, body)
+        assert len(joints) == 1, f"{name} sits on {body!r}, which has joints {joints}"
+        assert not name.endswith("_foot_collision"), "the soles must not be billed as servo impacts"
+
+    # 14 actuated joints = 8 servo shells + 2 ankles (soles) + 4 head/neck.
+    servo_bodies = {_geom_body(model, n) for n in XGODUCK_SERVO_SHELL_GEOMS}
+    actuated = {
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b)
+        for b in range(model.nbody)
+        if _body_hinge_joints(model, mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b))
+    }
+    assert len(actuated) == 14, f"expected 14 actuated bodies, got {sorted(actuated)}"
+    assert servo_bodies <= actuated
+    assert len(servo_bodies) == 8
+
+    excluded = actuated - servo_bodies
+    assert excluded == {
+        "ankle_left", "ankle_right",              # feet
+        "neck", "neck_pitch", "yaw_roll_motion", "jaw_soft",   # head, see head_impact
+    }, f"unexpected exclusion set {sorted(excluded)}"
+
+
+def test_contact_sensor_patterns_match_only_their_own_geoms():
+    """A pattern that over-matches silently double-bills a contact."""
+    all_geoms = list(STANDUP_WORLD_COLLISION_GEOMS)
+    sensors = {s.name: s for s in make_xgoduck_contact_sensors()}
+    assert set(sensors) == {"servo_ground_contact", "head_ground_contact", "trunk_ground_contact"}
+
+    matched = {}
+    for sensor_name, pattern in (
+        ("servo_ground_contact", XGODUCK_SERVO_GEOM_PATTERN),
+        ("head_ground_contact", XGODUCK_HEAD_GEOM_PATTERN),
+        ("trunk_ground_contact", XGODUCK_TRUNK_GEOM_PATTERN),
+    ):
+        hits = {n for n in all_geoms if re.fullmatch(pattern, n)}
+        assert hits, f"{sensor_name} pattern {pattern!r} matched nothing"
+        matched[sensor_name] = hits
+
+    assert matched["servo_ground_contact"] == set(XGODUCK_SERVO_SHELL_GEOMS)
+    assert not any(n.endswith("_foot_collision") for n in matched["servo_ground_contact"])
+
+    # The sensor cfg must carry the same pattern it was validated against.
+    assert sensors["servo_ground_contact"].primary.pattern == XGODUCK_SERVO_GEOM_PATTERN
+    for sensor in sensors.values():
+        assert sensor.secondary.pattern == "terrain"
+        assert sensor.fields == ("force",)
