@@ -133,8 +133,35 @@ try:
     _orig_runner_load = _MjlabRunner.load
 
     def _load_with_warm_start(self, path, *args, **kwargs):
-        infos = _orig_runner_load(self, path, *args, **kwargs)
-        if os.environ.get(WARM_START_ENV, "") not in ("", "0"):
+        warm = os.environ.get(WARM_START_ENV, "") not in ("", "0")
+        if warm and kwargs.get("strict", True):
+            try:
+                infos = _orig_runner_load(self, path, *args, **kwargs)
+            except RuntimeError as exc:
+                if "size mismatch" not in str(exc):
+                    raise
+                # Warm start ACROSS tasks: the actor's 61-D observation contract
+                # is shared by every task, but the critic sees task-specific
+                # privileged observations (Velocity 76 vs StandUp 74), so its
+                # layers cannot fit. Load the actor (+ its normalizer) only and
+                # let the critic and optimizer start fresh — which is what a
+                # cross-task warm start wants anyway, since the critic is
+                # learning a different value function.
+                print(
+                    "[mdp] Patch 5: warm start across tasks — critic shape differs, "
+                    "loading the shared actor only (critic/optimizer start fresh)."
+                )
+                kwargs["load_cfg"] = {
+                    "actor": True,
+                    "critic": False,
+                    "optimizer": False,
+                    "iteration": False,
+                    "rnd": False,
+                }
+                infos = _orig_runner_load(self, path, *args, **kwargs)
+        else:
+            infos = _orig_runner_load(self, path, *args, **kwargs)
+        if warm:
             restored = self.env.unwrapped.common_step_counter
             self.env.unwrapped.common_step_counter = 0
             self.current_learning_iteration = 0
