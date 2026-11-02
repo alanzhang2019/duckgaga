@@ -188,7 +188,14 @@ def main():
                 total = int(line.split(":", 1)[1])
                 break
     if total and per_iter:
-        print(f"target   {total} iters   ETA {(total - last) * per_iter / 3600:.1f} h")
+        # On a resume, rsl_rl treats `max_iterations` as "N MORE iterations", so the
+        # real end is first + N (a run started at 2200 with max_iterations 800 ends
+        # at 3000). A fresh run has first == 0 and this reduces to `total`.
+        end = first + total if first else total
+        if end > last:
+            print(f"target   {end} iters   ETA {(end - last) * per_iter / 3600:.1f} h")
+        else:
+            print(f"target   {end} iters   reached ({last})")
 
     # Sample columns across the run so a trend is visible at a glance.
     picks = sorted({round(first + (last - first) * i / max(args.cols - 1, 1)) for i in range(args.cols)})
