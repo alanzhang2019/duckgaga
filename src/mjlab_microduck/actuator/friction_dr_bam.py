@@ -33,6 +33,13 @@ class FrictionDRBamActuator(BamActuator):
         # kp_scale is (num_envs, 1); mirror it for a per-env friction multiplier.
         self.friction_scale = torch.ones_like(self.kp_scale)
         self.default_friction_scale = self.friction_scale.clone()
+        # XgoDuck (HLS1910): BAM's STS3215 model rate-limits the internal goal via
+        # q_target_smooth. That buffer is only created in load_log(); mjlab never
+        # calls it, so seed it here or compute_control raises AttributeError.
+        # MicroDuck's XL330 path does not hit this, so upstream has no equivalent.
+        act = self._bam_model.actuator
+        if hasattr(act, "default_max_velocity") and not hasattr(act, "q_target_smooth"):
+            act.q_target_smooth = 0.0
 
     def _compute_friction_budget(
         self,
