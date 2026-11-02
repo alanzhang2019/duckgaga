@@ -134,6 +134,7 @@ try:
 
     def _load_with_warm_start(self, path, *args, **kwargs):
         warm = os.environ.get(WARM_START_ENV, "") not in ("", "0")
+        actor_only = False
         if warm and kwargs.get("strict", True):
             try:
                 infos = _orig_runner_load(self, path, *args, **kwargs)
@@ -159,15 +160,19 @@ try:
                     "rnd": False,
                 }
                 infos = _orig_runner_load(self, path, *args, **kwargs)
+                actor_only = True
         else:
             infos = _orig_runner_load(self, path, *args, **kwargs)
         if warm:
             restored = self.env.unwrapped.common_step_counter
             self.env.unwrapped.common_step_counter = 0
             self.current_learning_iteration = 0
+            kept = "actor/normalizer only, critic+optimizer fresh" if actor_only else (
+                "weights/normalizer/optimizer kept"
+            )
             print(
                 f"[mdp] Patch 5: WARM START from {path} — common_step_counter "
-                f"{restored} → 0, iteration → 0 (curricula restart; weights/normalizer/optimizer kept)"
+                f"{restored} → 0, iteration → 0 (curricula restart; {kept})"
             )
         return infos
 
