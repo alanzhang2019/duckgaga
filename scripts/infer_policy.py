@@ -10,14 +10,16 @@ import pickle
 import queue
 import select
 import sys
-import termios
 import threading
 import time
-import tty
 import numpy as np
 import mujoco
 import mujoco.viewer
 import onnxruntime as ort
+
+# `termios`/`tty` are POSIX-only and are imported where the keyboard reader
+# uses them, so this module (and the BAM constants it exposes) stays importable
+# on Windows — where keyboard control is simply disabled.
 
 MICRODUCK_XML = "src/mjlab_microduck/robot/microduck/scene.xml"
 # MICRODUCK_XML = "src/mjlab_microduck/robot/microduck/scene_ramps.xml"
@@ -159,12 +161,21 @@ class TerminalInput:
         self.enabled = sys.stdin.isatty()
         self._fd = sys.stdin.fileno() if self.enabled else -1
         self._old_attrs = None
+        self._termios = None
         self._stop = threading.Event()
 
     def __enter__(self):
         if not self.enabled:
             print("WARNING: stdin is not a TTY — keyboard control disabled")
             return self
+        try:
+            import termios
+            import tty
+        except ImportError:  # Windows: no cbreak mode
+            self.enabled = False
+            print("WARNING: keyboard control needs termios (POSIX) — disabled")
+            return self
+        self._termios = termios
         self._old_attrs = termios.tcgetattr(self._fd)
         tty.setcbreak(self._fd)
         threading.Thread(target=self._reader, daemon=True).start()
@@ -173,7 +184,7 @@ class TerminalInput:
     def __exit__(self, *exc):
         self._stop.set()
         if self._old_attrs is not None:
-            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
+            self._termios.tcsetattr(self._fd, self._termios.TCSADRAIN, self._old_attrs)
 
     def _read1(self, timeout):
         """Read one byte from stdin, or None on timeout. os.read (unbuffered):

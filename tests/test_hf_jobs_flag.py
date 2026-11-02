@@ -77,6 +77,10 @@ def test_train_on_path_is_a_mjlab_trainer():
         "run `uv sync --reinstall-package mjlab-microduck`."
     )
     head = Path(exe).read_bytes()[:8192]
+    if not head.startswith(b"#!"):
+        # Windows console scripts are a PE launcher stub with the entry point
+        # appended at the END of the file, so the first 8 KiB are machine code.
+        head = Path(exe).read_bytes()
     assert b"mjlab" in head, (
         f"`train` resolves to {exe}, which is not a mjlab trainer. bin/train was "
         "uninstalled and this is an unrelated binary from PATH."

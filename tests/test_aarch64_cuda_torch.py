@@ -14,6 +14,10 @@ cases `uv sync` succeeds and you only find out when you launch a run:
    source binding a no-op without any warning.
 2. The x86_64 resolution must stay on PyPI, otherwise HF Jobs silently
    switch wheels.
+
+Windows is routed separately (win32 -> a CUDA mirror, because PyPI's Windows
+torch wheel is CPU-only too). Those tests therefore scope their assertions to
+the platform they are actually protecting instead of "every torch source".
 """
 
 import platform
@@ -65,6 +69,11 @@ def test_torch_is_a_direct_dependency():
     )
 
 
+def _is_cuda_index(url):
+    """A PyTorch CUDA wheelhouse — upstream's own, or a mirror of it."""
+    return "/whl/cu" in url.rstrip("/")
+
+
 def test_torch_source_is_pinned_to_a_cuda_index_on_aarch64():
     pyproject = tomllib.loads((_ROOT / "pyproject.toml").read_text())
     uv_cfg = pyproject["tool"]["uv"]
@@ -74,11 +83,27 @@ def test_torch_source_is_pinned_to_a_cuda_index_on_aarch64():
     )
     sources = uv_cfg["sources"]["torch"]
     indexes = {p["name"]: p["url"] for p in uv_cfg.get("index", [])}
+
+    # Every routed torch source must point at a CUDA wheelhouse: PyPI's wheels
+    # are CPU-only on aarch64 AND on win32, so a PyPI fallback is the bug this
+    # whole file guards against on both platforms.
     for src in sources:
-        assert "aarch64" in src["marker"], "the torch source must stay aarch64-scoped"
-        assert indexes[src["index"]].startswith(_CUDA_INDEX), (
-            f"index {src['index']} is not a PyTorch CUDA index"
+        url = indexes[src["index"]]
+        assert _is_cuda_index(url), (
+            f"index {src['index']} ({url}) is not a PyTorch CUDA index"
         )
+
+    # ... and the aarch64 route must specifically stay on PyTorch's own index.
+    aarch64 = [s for s in sources if "aarch64" in s["marker"]]
+    assert len(aarch64) == 1, (
+        "the torch source must keep exactly one aarch64-scoped entry -> without "
+        "it aarch64 falls back to PyPI's CPU wheel and `train` dies with "
+        f"IndexError in select_gpus(). Found {len(aarch64)}."
+    )
+    assert indexes[aarch64[0]["index"]].startswith(_CUDA_INDEX), (
+        f"the aarch64 torch source points at {indexes[aarch64[0]['index']]!r}, "
+        "not PyTorch's own CUDA index."
+    )
 
 
 def test_lockfile_routes_aarch64_torch_to_cuda_wheels():
@@ -96,13 +121,18 @@ def test_lockfile_routes_aarch64_torch_to_cuda_wheels():
 
 
 def test_x86_64_resolution_stays_on_pypi():
-    """HF Jobs run on x86_64: their resolution must not move."""
+    """HF Jobs run on linux x86_64: their resolution must not move.
+
+    Scoped to the entries that resolve on linux x86_64 / macOS — win32 is
+    routed to a CUDA mirror on purpose and is not what HF Jobs reads.
+    """
     others = [
         p
         for p in _packages("torch")
         if "platform_machine == 'aarch64'" not in _markers(p)
+        and "sys_platform == 'win32'" not in _markers(p)
     ]
-    assert others, "no non-aarch64 torch entry found"
+    assert others, "no non-aarch64, non-win32 torch entry found"
     for pkg in others:
         assert _registry(pkg) == "https://pypi.org/simple", (
             f"x86_64 torch moved to {_registry(pkg)!r} — HF Jobs would switch "
