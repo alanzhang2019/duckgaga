@@ -99,12 +99,23 @@ better-actuator-models = { git = "https://github.com/Rhoban/bam.git", branch = "
 # zero-copy warp<->torch interop stays on one runtime major version.
 # The marker keeps x86_64 (HF Jobs) on PyPI, where the wheel already bundles
 # CUDA via its nvidia-*-cu12 deps — that resolution is unchanged.
+# On Windows, PyPI's torch wheel is CPU-ONLY (110 MB, no bundled CUDA), so
+# torch.cuda.device_count() == 0 and mjlab's select_gpus() fails the same way it
+# does on linux-aarch64. Route torch to the cu128 wheel on win32. The index URL
+# points at the NJU mirror of download.pytorch.org/whl/cu128 because
+# download.pytorch.org is not reachable from this machine.
 torch = [
   { index = "pytorch-cu129", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+  { index = "pytorch-cu128-win", marker = "sys_platform == 'win32'" },
 ]
 
 [[tool.uv.index]]
 name = "pytorch-cu129"
 url = "https://download.pytorch.org/whl/cu129"
 # explicit: only packages that name this index resolve from it.
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128-win"
+url = "https://mirror.nju.edu.cn/pytorch/whl/cu128"
 explicit = true

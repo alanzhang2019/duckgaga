@@ -76,6 +76,10 @@ print("[mdp] Patches 1-2 active: NaN-safe reward/advantage")
 # ---------------------------------------------------------------------------
 from mjlab.rl import exporter_utils as _exporter_utils  # noqa: E402
 from mjlab.envs.mdp.actions import JointPositionAction as _JointAction  # noqa: E402
+# XgoDuck additions: freeze-then-act action (standup drop phase) and a push
+# event that waits out the freeze window before applying velocity.
+from mjlab.envs.mdp.actions import JointPositionActionCfg as _JointActionCfg  # noqa: E402
+from mjlab.envs.mdp.events import push_by_setting_velocity as _push_by_setting_velocity  # noqa: E402
 
 def _get_base_metadata_no_passive(env, run_path):
     robot = env.scene["robot"]
@@ -7704,3 +7708,385 @@ def roulade_lateral_velocity_penalty(
     """Body-frame lateral (y) linear velocity² — keeps the roll straight."""
     asset: Entity = env.scene[asset_cfg.name]
     return torch.nan_to_num(asset.data.root_link_lin_vel_b[:, 1].pow(2), nan=0.0)
+
+
+# ===========================================================================
+# XgoDuck additions — ported verbatim from the xgoduck_rl fork.
+# These do not exist upstream (grep returns 0 hits): the XgoDuck standup
+# needs a freeze-then-act action, and the velocity recipe uses a
+# standing-gated hip-yaw term plus XgoDuck-specific shaping.
+# ===========================================================================
+
+
+# --- skating_body_speed_reward -----------------------------------
+
+def skating_body_speed_reward(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    vel_scale: float = 0.3,
+    bidirectional: bool = False,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Reward actual forward translation, on the wheel-speed reward's scale.
+
+    Commands are push intensity, not a velocity target. Motion opposite the
+    command and stationary wheel spinning earn no body-speed reward.
+    """
+    cmd_x = env.command_manager.get_command(command_name)[:, 0]
+    asset: Entity = env.scene[asset_cfg.name]
+    forward_speed = torch.nan_to_num(
+        asset.data.root_link_lin_vel_b[:, 0], nan=0.0, posinf=0.0, neginf=0.0
+    )
+    if bidirectional:
+        aligned_speed = torch.sign(cmd_x) * forward_speed
+        command_magnitude = torch.abs(cmd_x)
+    else:
+        aligned_speed = forward_speed
+        command_magnitude = torch.clamp(cmd_x, min=0.0)
+    return command_magnitude * torch.tanh(torch.clamp(aligned_speed, min=0.0) / vel_scale)
+
+
+# --- joint_home_gaussian -----------------------------------------
+
+def joint_home_gaussian(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    std: float = 0.15,
+) -> torch.Tensor:
+    """Gaussian on selected joints around default (command / residual 0).
+
+    ``std=0.15`` rad is looser than the walking hip_roll pose std (0.05).
+    """
+    asset = env.scene[asset_cfg.name]
+    err = (
+        asset.data.joint_pos[:, asset_cfg.joint_ids]
+        - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    )
+    return torch.exp(-((err / std) ** 2)).mean(dim=-1)
+
+
+# --- ground_pick_gravity_*_phased --------------------------------
+
+def ground_pick_gravity_x_phased(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    max_forward: float = 0.65,
+    descent_end: float = 0.25,
+    hold_end: float = 0.35,
+    rise_end: float = 0.60,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=("trunk_base",)),
+) -> torch.Tensor:
+    """Descent upright via body-frame gravity x (forward lean proxy).
+
+    ``projected_gravity_b[:,0]`` is positive when the trunk leans forward
+    (verified). The reward *is* that value: backward lean (negative) is a
+    penalty, 0..max_forward is rewarded, and anything past ``max_forward``
+    is gated to 0. Down-gate only — does not fight the return-phase upright
+    term. max_forward=0.65 covers the measured send_conf crouch (gx≈0.54,
+    ~33° forward) with a little headroom.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    gx = asset.data.projected_gravity_b[:, 0]
+    raw = torch.where(gx > max_forward, torch.zeros_like(gx), gx)
+    gate = phase_pose_blend(
+        _gp_phase(env, command_name), descent_end, hold_end, rise_end
+    )
+    return gate * raw
+
+
+def ground_pick_gravity_y_abs_phased(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    descent_end: float = 0.25,
+    hold_end: float = 0.35,
+    rise_end: float = 0.60,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=("trunk_base",)),
+) -> torch.Tensor:
+    """|projected_gravity_b y| during descent+hold (use with a negative weight).
+
+    Zero gy is the balanced send_conf crouch; side lean is |gy|.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    gy = asset.data.projected_gravity_b[:, 1]
+    gate = phase_pose_blend(
+        _gp_phase(env, command_name), descent_end, hold_end, rise_end
+    )
+    return gate * gy.abs()
+
+
+# --- push_velocity_linear_curriculum -----------------------------
+
+def push_velocity_linear_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    event_name: str,
+    max_velocity_range: dict[str, tuple[float, float]],
+    end_step: int,
+) -> torch.Tensor:
+    """Linearly ramp additive world-frame velocity kicks using total env steps."""
+    del env_ids
+    progress = min(1.0, max(0.0, float(env.common_step_counter) / end_step))
+    term = env.event_manager.get_term_cfg(event_name)
+    term.params["velocity_range"] = {
+        axis: (lo * progress, hi * progress)
+        for axis, (lo, hi) in max_velocity_range.items()
+    }
+    return torch.tensor([progress], device=env.device)
+
+
+# --- joint_pos_l1_when_standing ----------------------------------
+
+def joint_pos_l1_when_standing(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    command_name: str = "twist",
+    linear_threshold: float = 0.03,
+    angular_threshold: float = 1e-6,
+) -> torch.Tensor:
+    """L1 joint deviation from HOME below the commanded translation threshold.
+
+    A nonzero turn command disables the cost. Gate on commands, not measured
+    motion: stopping at a joint limit must not make the position cost disappear.
+    """
+    command = env.command_manager.get_command(command_name)
+    low_speed = torch.linalg.vector_norm(command[:, :2], dim=-1) < linear_threshold
+    no_turn = command[:, 2].abs() <= angular_threshold
+    asset: Entity = env.scene[asset_cfg.name]
+    error = (
+        asset.data.joint_pos[:, asset_cfg.joint_ids]
+        - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    )
+    return error.abs().sum(dim=-1) * (low_speed & no_turn)
+
+
+# --- standup drop: set_random_drop_state + FreezeThenJointPositionAction + delayed push 
+
+def set_random_drop_state(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    drop_z_min: float = 0.23,
+    drop_z_max: float = 0.25,
+    euler_abs_max: float = math.pi,
+):
+    """Reset to a free-fall: HOME joints, random ±euler ZYX, trunk at drop_z.
+
+    Used by XGODUCK standup so every episode starts in the air and lands in an
+    unknown pose. Joints stay at whatever ``reset_robot_joints`` wrote (HOME).
+    Root linear/angular velocity is zeroed so the fall is from rest.
+    """
+    del asset_cfg  # signature matches other reset events; pose is written on qpos.
+    if env_ids is None or len(env_ids) == 0:
+        return
+    env_ids = env_ids.to(env.device, dtype=torch.int)
+    num = len(env_ids)
+
+    roll = (torch.rand(num, device=env.device) * 2 - 1) * euler_abs_max
+    pitch = (torch.rand(num, device=env.device) * 2 - 1) * euler_abs_max
+    yaw = (torch.rand(num, device=env.device) * 2 - 1) * euler_abs_max
+    cr = torch.cos(roll * 0.5)
+    sr = torch.sin(roll * 0.5)
+    cp = torch.cos(pitch * 0.5)
+    sp = torch.sin(pitch * 0.5)
+    cy = torch.cos(yaw * 0.5)
+    sy = torch.sin(yaw * 0.5)
+    # ZYX intrinsic Euler → quaternion (yaw * pitch * roll).
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+    quat = torch.stack([w, x, y, z], dim=1)
+    quat = quat / torch.linalg.norm(quat, dim=1, keepdim=True).clamp_min(1e-8)
+
+    drop_z = (
+        torch.rand(num, device=env.device) * (drop_z_max - drop_z_min) + drop_z_min
+    )
+    env.sim.data.qpos[env_ids, 2] = drop_z
+    env.sim.data.qpos[env_ids, 3:7] = quat
+    env.sim.data.qvel[env_ids, :6] = 0.0
+
+
+@_dataclass(kw_only=True)
+class FreezeThenJointPositionActionCfg(_JointActionCfg):
+    """Joint-position action that holds HOME for the first ``freeze_s`` seconds."""
+
+    freeze_s: float = 2.0
+
+    def build(self, env: ManagerBasedRlEnv) -> "FreezeThenJointPositionAction":
+        return FreezeThenJointPositionAction(self, env)
+
+
+class FreezeThenJointPositionAction(_JointAction):
+    """Zero raw actions (→ HOME targets) until ``episode_length`` reaches freeze_s."""
+
+    cfg: FreezeThenJointPositionActionCfg
+
+    def process_actions(self, actions: torch.Tensor) -> None:
+        freeze = (
+            self._env.episode_length_buf.float() * float(self._env.step_dt)
+        ) < float(self.cfg.freeze_s)
+        if freeze.any():
+            actions[freeze] = 0.0
+            self._env.action_manager._action[freeze] = 0.0
+        super().process_actions(actions)
+
+
+def push_by_setting_velocity_after_delay(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    delay_s: float = 2.0,
+    **kwargs,
+) -> None:
+    """Same as mjlab ``push_by_setting_velocity``, skipped during the freeze window."""
+    if env_ids is None or len(env_ids) == 0:
+        return
+    env_ids = env_ids.to(env.device)
+    t = env.episode_length_buf.float() * float(env.step_dt)
+    ready = env_ids[t[env_ids.long()] >= delay_s]
+    if len(ready) == 0:
+        return
+    _push_by_setting_velocity(env, ready, **kwargs)
+
+
+# --- four_wheels_grounded_reward ---------------------------------
+
+def four_wheels_grounded_reward(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+    """Small bonus only when all four tires simultaneously touch terrain."""
+    found = env.scene[sensor_name].data.found
+    assert found is not None
+    return (found > 0).all(dim=1).float()
+
+
+# --- neck_pose_bias_penalty --------------------------------------
+
+def neck_pose_bias_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str = "head_pose",
+    tau_s: float = 1.0,
+    deadband_rad: float = math.radians(3.0),
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Negative sustained neck-pitch error outside a symmetric deadband.
+
+    Commands are deltas from HOME, just like head_pose_tracking. Average the
+    signed error before taking its magnitude so stride oscillation can cancel.
+    This has its own state: evaluating it must not advance head_pose_bias's EMA.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    if not hasattr(env, "_head_pose_neck_ids"):
+        head_pose_tracking(env, command_name=command_name, asset_cfg=asset_cfg)
+    # The shared head-joint cache is ordered neck_pitch, head_pitch, yaw, roll.
+    neck_id = env._head_pose_neck_ids[0]
+    measured = asset.data.joint_pos[:, neck_id] + (
+        asset.data.joint_pos[:, env._head_pose_bl_ids[0]]
+        * env._head_pose_bl_mask[0]
+    )
+    cmd = env.command_manager.get_command(command_name)[:, 0]
+    err = measured - asset.data.default_joint_pos[:, neck_id] - cmd
+    if not hasattr(env, "_neck_pose_bias_ema"):
+        env._neck_pose_bias_ema = torch.zeros_like(err)
+    fresh = env.episode_length_buf <= 1
+    env._neck_pose_bias_ema[fresh] = 0.0
+    alpha = min(1.0, float(env.step_dt) / max(tau_s, 1e-6))
+    env._neck_pose_bias_ema = (
+        (1.0 - alpha) * env._neck_pose_bias_ema + alpha * err
+    )
+    return -(env._neck_pose_bias_ema.abs() - deadband_rad).clamp(min=0.0)
+
+
+# --- _roulade_pitch_angle ----------------------------------------
+
+def _roulade_pitch_angle(quat: torch.Tensor) -> torch.Tensor:
+    """Wrapped sagittal angle, invariant to yaw and quaternion sign.
+
+    Project the forward axis onto the vertical plane perpendicular to the
+    horizontal lateral axis. Unlike integrating body-Y angular velocity,
+    closed yaw/roll loops cannot create fictitious forward-turn progress.
+    """
+    rotation = matrix_from_quat(quat)
+    lateral_horizontal = rotation[:, :2, 1].norm(dim=-1).clamp_min(1e-6)
+    horizontal_forward = (
+        rotation[:, 0, 0] * rotation[:, 1, 1]
+        - rotation[:, 1, 0] * rotation[:, 0, 1]
+    ) / lateral_horizontal
+    return torch.atan2(-rotation[:, 2, 0], horizontal_forward)
+
+
+# --- roulade_angle_observation -----------------------------------
+
+def roulade_angle_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """Signed cumulative radians; observation noise must not alter reward state."""
+    accum, _, _ = _roulade_state(env)
+    return accum.unsqueeze(-1).clone()
+
+
+# --- reset_root_to_ground ----------------------------------------
+
+def reset_root_to_ground(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    clearance: float = 0.0005,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """Ground the final joint/orientation reset using collision support points.
+
+    Convex-hull vertices preserve the exact minimum of mesh support while
+    keeping reset work small. Only kinematics is evaluated at the temporary
+    reset height; no contact solve is run with deeply penetrating geometry.
+    """
+    if env_ids is None or len(env_ids) == 0:
+        return
+    import mujoco_warp as mjwarp
+    import warp as wp
+    from scipy.spatial import ConvexHull, QhullError
+
+    asset = env.scene[asset_cfg.name]
+    cache = env.__dict__.setdefault("_ground_support_cache", {})
+    if id(asset) not in cache:
+        model = env.sim.mj_model
+        geometry = []
+        for g in asset.data.indexing.geom_ids.tolist():
+            if not (model.geom_contype[g] or model.geom_conaffinity[g]):
+                continue
+            kind = int(model.geom_type[g])
+            points = None
+            if kind == mujoco.mjtGeom.mjGEOM_MESH:
+                mesh = model.geom_dataid[g]
+                start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
+                vertices = model.mesh_vert[start:start + count].copy()
+                if count > 128:
+                    try:
+                        vertices = vertices[ConvexHull(vertices).vertices]
+                    except QhullError:
+                        pass
+                points = torch.tensor(vertices, dtype=torch.float32, device=env.device)
+            geometry.append((g, kind, points,
+                             torch.tensor(model.geom_size[g], device=env.device, dtype=torch.float32)))
+        if not geometry:
+            raise ValueError("Grounded reset requires collision geometry")
+        cache[id(asset)] = geometry
+
+    with wp.ScopedDevice(env.sim.wp_device):
+        mjwarp.kinematics(env.sim.wp_model, env.sim.wp_data)
+    bottom = torch.full((len(env_ids),), torch.inf, device=env.device)
+    for g, kind, points, size in cache[id(asset)]:
+        row = env.sim.data.geom_xmat[env_ids, g].reshape(-1, 3, 3)[:, 2, :]
+        z = env.sim.data.geom_xpos[env_ids, g, 2]
+        if points is not None:
+            z = z + (row @ points.T).amin(dim=-1)
+        elif kind == mujoco.mjtGeom.mjGEOM_SPHERE:
+            z = z - size[0]
+        elif kind == mujoco.mjtGeom.mjGEOM_BOX:
+            z = z - (row.abs() * size).sum(dim=-1)
+        elif kind == mujoco.mjtGeom.mjGEOM_CAPSULE:
+            z = z - size[0] - row[:, 2].abs() * size[1]
+        elif kind == mujoco.mjtGeom.mjGEOM_CYLINDER:
+            z = z - size[0] * row[:, :2].norm(dim=-1) - size[1] * row[:, 2].abs()
+        elif kind == mujoco.mjtGeom.mjGEOM_ELLIPSOID:
+            z = z - (row * size).norm(dim=-1)
+        else:
+            raise ValueError(f"Unsupported robot collision geometry type: {kind}")
+        bottom = torch.minimum(bottom, z)
+    root_z = int(asset.data.indexing.free_joint_q_adr[2])
+    ground_z = env.scene.terrain.env_origins[env_ids, 2]
+    env.sim.data.qpos[env_ids, root_z] += ground_z + clearance - bottom

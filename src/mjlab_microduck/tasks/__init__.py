@@ -39,6 +39,9 @@ from .microduck_velstand_env_cfg import (
     MicroduckVelStandRlCfg,
 )
 from .microduck_ground_pick_env_cfg import (
+    DESCENT_END as _GP_DESCENT_END,
+    HOLD_END as _GP_HOLD_END,
+    RISE_END as _GP_RISE_END,
     make_microduck_ground_pick_env_cfg,
     MicroduckGroundPickRlCfg,
 )
@@ -281,3 +284,417 @@ for _task_id, _make_cfg, _kw, _rl_cfg, _robot_cfg in _BACKLASH_TASKS:
         rl_cfg=_rl_cfg,
         runner_cls=MicroduckOnPolicyRunner,
     )
+# XgoDuck velocity: walk recipe with the XgoDuck XML and spawn height.
+from copy import deepcopy
+from dataclasses import replace
+
+import math
+
+from mjlab_microduck.robot.xgoduck_constants import (
+    XGODUCK_SIT_Z,
+    XGODUCK_STAND_Z,
+    XGODUCK_STANDUP_ROBOT_CFG,
+    XGODUCK_WALK_ROBOT_CFG,
+    XGODUCK_WALK_STAND_Z,
+)
+from . import mdp as microduck_mdp
+from .microduck_standup_env_cfg import STAND_Z as _MICRODUCK_STANDUP_STAND_Z
+
+# Drop-from-air standup: 10 cm above measured stand height, 2 s frozen, then rise.
+_XGODUCK_STANDUP_DROP_DZ = 0.10
+_XGODUCK_STANDUP_FREEZE_S = 2.0
+# 2 s freeze + MicroDuck's 6 s rise window.
+_XGODUCK_STANDUP_EPISODE_S = 8.0
+
+# view.py pick_conf (deg): legs + neck/head so the mouth can reach the floor.
+_XGODUCK_PICK_POSE = {
+    "left_hip_yaw": 0.0,
+    "left_hip_roll": math.radians(-5),
+    "left_hip_pitch": math.radians(-80),
+    "left_knee": 0.0,
+    "left_ankle": math.radians(50),
+    "neck_pitch": math.radians(-120),
+    "head_pitch": math.radians(-90),
+    "head_yaw": 0.0,
+    "head_roll": 0.0,
+    "right_hip_yaw": 0.0,
+    "right_hip_roll": math.radians(5),
+    "right_hip_pitch": math.radians(80),
+    "right_knee": 0.0,
+    "right_ankle": math.radians(-50),
+}
+
+# TensorBoard logs under logs/rsl_rl/xgoduck_velocity/.
+XgoduckRlCfg = replace(
+    MicroduckRlCfg,
+    logger="tensorboard",
+    experiment_name="xgoduck_velocity",
+    run_name="xgoduck",
+    upload_model=False,
+)
+
+
+from mjlab.managers import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
+
+from .xgoduck_physics import configure_xgoduck_physics
+
+
+def _xgoduck_velocity_cfg(**kwargs):
+    cfg = make_microduck_velocity_env_cfg(**kwargs)
+    # MicroDuck's legacy head list includes bearing_roll, a right hip on XgoDuck.
+    if "randomize_head_com" in cfg.events:
+        cfg.events["randomize_head_com"].params["asset_cfg"].body_names = (
+            "neck", "neck_pitch", "yaw_roll_motion", "jaw_soft",
+        )
+    cfg.scene.entities = {"robot": deepcopy(XGODUCK_WALK_ROBOT_CFG)}
+    # reset_root_state_uniform ADDS these offsets to InitialStateCfg.pos.
+    # HOME already leaves 1 mm below the soles; do not add the height again
+    # or sample negative offsets that push the feet into the floor.
+    cfg.events["reset_base"].params["pose_range"]["z"] = (0.0, 0.0)
+    if kwargs.get("rough", False):
+        # terrain_levels assumes increasing difficulty along rows.
+        cfg.scene.terrain.terrain_generator.curriculum = not kwargs.get("play", False)
+    cfg.events["foot_friction"].params["ranges"] = (0.4, 1.5)
+    if "push_robot" in cfg.events:
+        cfg.events["push_robot"].params["velocity_range"] = {
+            "x": (-0.2, 0.2),
+            "y": (-0.2, 0.2),
+        }
+    actor = cfg.observations["actor"].terms
+    actor["base_ang_vel"].noise.n_min = -0.06
+    actor["base_ang_vel"].noise.n_max = 0.06
+    actor["projected_gravity"].noise.n_min = -0.03
+    actor["projected_gravity"].noise.n_max = 0.03
+    actor["joint_pos"].noise.n_min = -0.01
+    actor["joint_pos"].noise.n_max = 0.01
+    cfg.rewards["pose"].weight = 1.3
+    cfg.rewards["track_linear_velocity"].weight = 3.0
+    cfg.rewards["track_linear_velocity"].params["std"] = 0.25
+    cfg.rewards["foot_swing_height"].weight = -5.0
+    # Keep the hips near HOME at low commanded speed, while allowing turns.
+    cfg.rewards["hip_yaw_home"] = RewardTermCfg(
+        func=microduck_mdp.joint_pos_l1_when_standing,
+        weight=-1.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=("left_hip_yaw", "right_hip_yaw"),
+            ),
+            "command_name": "twist",
+            "linear_threshold": 0.03,
+            "angular_threshold": 1e-6,
+        },
+    )
+    # Sample straight reverse commands in 15% of moving training scenarios.
+    if not kwargs.get("play", False):
+        cfg.commands["twist"].rel_backward_envs = 0.15
+        cfg.commands["twist"].backward_speed_range = (-0.2, -0.1)
+    # Hip yaw inward stop is 0.22 rad.
+    _std_s = dict(cfg.rewards["pose"].params["std_standing"])
+    _std_w = dict(cfg.rewards["pose"].params["std_walking"])
+    _std_r = dict(cfg.rewards["pose"].params["std_running"])
+    _std_s[r".*hip_yaw.*"] = 0.05
+    _std_w[r".*hip_yaw.*"] = 0.15
+    _std_r[r".*hip_yaw.*"] = 0.25
+    cfg.rewards["pose"].params["std_standing"] = _std_s
+    cfg.rewards["pose"].params["std_walking"] = _std_w
+    cfg.rewards["pose"].params["std_running"] = _std_r
+    if kwargs.get("play", False):
+        # Match the requested Walk playback posture; the training curriculum
+        # must not re-enable random head commands after entering play.
+        cfg.commands["head_pose"].ranges = ((0.0, 0.0),) * 4
+        cfg.commands["head_pose"].zero_command_prob = 1.0
+        cfg.curriculum.pop("head_pose_range", None)
+    return cfg
+
+
+register_mjlab_task(
+    task_id="Mjlab-Velocity-Flat-XgoDuck",
+    env_cfg=_xgoduck_velocity_cfg(),
+    play_env_cfg=_xgoduck_velocity_cfg(play=True),
+    rl_cfg=XgoduckRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-Velocity-Rough-XgoDuck",
+    env_cfg=_xgoduck_velocity_cfg(rough=True),
+    play_env_cfg=_xgoduck_velocity_cfg(play=True, rough=True),
+    rl_cfg=XgoduckRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# XgoDuck StandUp / GroundPick / SitStand use the full-contact model.
+# Heights measured on the upstream trunk are shifted to XGODUCK_STAND_Z.
+XgoduckStandUpRlCfg = replace(
+    MicroduckStandUpRlCfg,
+    logger="tensorboard",
+    experiment_name="xgoduck_standup",
+    run_name="xgoduck",
+    upload_model=False,
+)
+XgoduckGroundPickRlCfg = replace(
+    MicroduckGroundPickRlCfg,
+    logger="tensorboard",
+    experiment_name="xgoduck_ground_pick",
+    run_name="xgoduck",
+    upload_model=False,
+)
+XgoduckSitStandRlCfg = replace(
+    MicroduckSitStandRlCfg,
+    logger="tensorboard",
+    experiment_name="xgoduck_sitstand",
+    run_name="xgoduck",
+    upload_model=False,
+)
+
+
+def _retarget_xgoduck_standup(cfg):
+    """Keep MicroDuck standup rewards; only shift heights and use drop+freeze."""
+    stand = XGODUCK_STAND_Z
+    sit = XGODUCK_SIT_Z
+    dz = stand - _MICRODUCK_STANDUP_STAND_Z
+    r = cfg.rewards
+    for name in (
+        "height_stand",
+        "height_stand_sharp",
+        "height_stand_l1",
+        "standing_composite",
+    ):
+        r[name].params["target_height"] = stand
+    r["com_upward_velocity"].params["max_height"] = stand + 0.010
+    r["upright_sharp"].params["height_low"] = sit
+    r["upright_sharp"].params["height_high"] = stand
+    r["arrival_damping"].params["height_low"] += dz
+    r["arrival_damping"].params["height_high"] += dz
+    if "head_pose_bias" in r:
+        r["head_pose_bias"].params["gate_height_low"] += dz
+        r["head_pose_bias"].params["gate_height_high"] += dz
+    if "body_pose_tracking" in r:
+        r["body_pose_tracking"].params["nominal_height"] = stand
+
+    drop_z = stand + _XGODUCK_STANDUP_DROP_DZ
+    cfg.events["set_ground_state"].func = microduck_mdp.set_random_drop_state
+    cfg.events["set_ground_state"].params = {
+        "drop_z_min": drop_z - 0.005,
+        "drop_z_max": drop_z + 0.005,
+        "euler_abs_max": math.pi,
+    }
+    cfg.curriculum.pop("ground_state_mix", None)
+    cfg.episode_length_s = _XGODUCK_STANDUP_EPISODE_S
+
+    joint = cfg.actions["joint_pos"]
+    cfg.actions["joint_pos"] = microduck_mdp.FreezeThenJointPositionActionCfg(
+        entity_name=joint.entity_name,
+        actuator_names=joint.actuator_names,
+        scale=joint.scale,
+        offset=joint.offset,
+        preserve_order=joint.preserve_order,
+        use_default_offset=joint.use_default_offset,
+        clip=joint.clip,
+        freeze_s=_XGODUCK_STANDUP_FREEZE_S,
+    )
+    if "push_robot" in cfg.events:
+        cfg.events["push_robot"].func = (
+            microduck_mdp.push_by_setting_velocity_after_delay
+        )
+        cfg.events["push_robot"].params["delay_s"] = _XGODUCK_STANDUP_FREEZE_S
+
+    cfg.sim.nconmax = 200
+    cfg.sim.mujoco.iterations = 30
+    cfg.sim.mujoco.ls_iterations = 50
+    return configure_xgoduck_physics(cfg)
+
+
+def _xgoduck_standup_cfg(**kwargs):
+    cfg = make_microduck_standup_env_cfg(**kwargs)
+    cfg.scene.entities = {"robot": XGODUCK_STANDUP_ROBOT_CFG}
+    return _retarget_xgoduck_standup(cfg)
+
+
+def _xgoduck_ground_pick_cfg(**kwargs):
+    from mjlab.managers import RewardTermCfg
+    from mjlab.managers.scene_entity_config import SceneEntityCfg
+
+    cfg = make_microduck_ground_pick_env_cfg(**kwargs)
+    cfg.scene.entities = {"robot": XGODUCK_STANDUP_ROBOT_CFG}
+    cfg.events["reset_base"].params["pose_range"]["z"] = (
+        XGODUCK_STAND_Z - 0.005,
+        XGODUCK_STAND_Z + 0.005,
+    )
+    # Hip yaw/roll stay at the default pose during the crouch.
+    cfg.rewards["hip_yaw_roll_hold"] = RewardTermCfg(
+        func=microduck_mdp.joint_deviation_l1,
+        weight=-7.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=(r".*hip_yaw.*", r".*hip_roll.*")
+            ),
+        },
+    )
+    # Measured send_conf crouch balances at gx≈0.54 (~33° forward), gy≈0.
+    cfg.rewards["descent_gravity_x"] = RewardTermCfg(
+        func=microduck_mdp.ground_pick_gravity_x_phased,
+        weight=1.0,
+        params={
+            "command_name": "twist",
+            "max_forward": 0.65,
+            "descent_end": _GP_DESCENT_END,
+            "hold_end": _GP_HOLD_END,
+            "rise_end": _GP_RISE_END,
+        },
+    )
+    cfg.rewards["descent_gravity_y_abs"] = RewardTermCfg(
+        func=microduck_mdp.ground_pick_gravity_y_abs_phased,
+        weight=-1.0,
+        params={
+            "command_name": "twist",
+            "descent_end": _GP_DESCENT_END,
+            "hold_end": _GP_HOLD_END,
+            "rise_end": _GP_RISE_END,
+        },
+    )
+    cfg.rewards["mouth_ground_proximity"].params["std"] = 0.04
+    cfg.rewards["neck_vel_descent"].weight = -0.01
+    # Light STAND↔pick interpolation (view.py pick_conf). Down-gate via blend.
+    cfg.rewards["descent_pick_pose"] = RewardTermCfg(
+        func=microduck_mdp.phase_pose_track,
+        weight=1.0,
+        params={
+            "command_name": "twist",
+            "std": 0.4,
+            "target_pose": _XGODUCK_PICK_POSE,
+            "descent_end": _GP_DESCENT_END,
+            "hold_end": _GP_HOLD_END,
+            "rise_end": _GP_RISE_END,
+        },
+    )
+    return configure_xgoduck_physics(cfg)
+
+
+def _retarget_xgoduck_sitstand(cfg):
+    """Shift MicroDuck sit/stand heights onto XGODUCK kinematic trunk z."""
+    stand = XGODUCK_STAND_Z
+    sit = XGODUCK_SIT_Z
+    r = cfg.rewards
+    for name in (
+        "posture_height",
+        "posture_height_sharp",
+        "posture_height_l1",
+        "posture_stillness",
+        "posture_composite",
+    ):
+        r[name].params["sit_z"] = sit
+        r[name].params["stand_z"] = stand
+    r["rise_bootstrap"].params["max_height"] = stand + 0.010
+    # MicroDuck: SIT_UPRIGHT_Z = SIT_Z + 0.015, STAND_UPRIGHT_Z = STAND_Z - 0.015
+    r["upright_while_tall"].params["height_low"] = sit + 0.015
+    r["upright_while_tall"].params["height_high"] = stand - 0.015
+    cfg.commands["twist"].sit_z = sit
+    cfg.commands["twist"].stand_z = stand
+    cfg.events["reset_base"].params["pose_range"]["z"] = (
+        stand - 0.005,
+        stand + 0.005,
+    )
+    gs = cfg.events["set_ground_state"].params
+    gs["sitting_z_min"] = sit
+    gs["sitting_z_max"] = sit + 0.015
+    gs["standing_z_min"] = stand - 0.005
+    gs["standing_z_max"] = stand + 0.005
+    return configure_xgoduck_physics(cfg)
+
+
+def _xgoduck_sitstand_cfg(**kwargs):
+    cfg = make_microduck_sitstand_env_cfg(**kwargs)
+    cfg.scene.entities = {"robot": XGODUCK_STANDUP_ROBOT_CFG}
+    return _retarget_xgoduck_sitstand(cfg)
+
+
+register_mjlab_task(
+    task_id="Mjlab-StandUp-Flat-XgoDuck",
+    env_cfg=_xgoduck_standup_cfg(),
+    play_env_cfg=_xgoduck_standup_cfg(play=True),
+    rl_cfg=XgoduckStandUpRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+register_mjlab_task(
+    task_id="Mjlab-StandUp-Rough-XgoDuck",
+    env_cfg=_xgoduck_standup_cfg(rough=True),
+    play_env_cfg=_xgoduck_standup_cfg(play=True, rough=True),
+    rl_cfg=XgoduckStandUpRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+register_mjlab_task(
+    task_id="Mjlab-GroundPick-Flat-XgoDuck",
+    env_cfg=_xgoduck_ground_pick_cfg(),
+    play_env_cfg=_xgoduck_ground_pick_cfg(play=True),
+    rl_cfg=XgoduckGroundPickRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+register_mjlab_task(
+    task_id="Mjlab-GroundPick-Rough-XgoDuck",
+    env_cfg=_xgoduck_ground_pick_cfg(rough=True),
+    play_env_cfg=_xgoduck_ground_pick_cfg(play=True, rough=True),
+    rl_cfg=XgoduckGroundPickRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+register_mjlab_task(
+    task_id="Mjlab-SitStand-Flat-XgoDuck",
+    env_cfg=_xgoduck_sitstand_cfg(),
+    play_env_cfg=_xgoduck_sitstand_cfg(play=True),
+    rl_cfg=XgoduckSitStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+register_mjlab_task(
+    task_id="Mjlab-SitStand-Rough-XgoDuck",
+    env_cfg=_xgoduck_sitstand_cfg(rough=True),
+    play_env_cfg=_xgoduck_sitstand_cfg(play=True, rough=True),
+    rl_cfg=XgoduckSitStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# XgoDuck dynamic tricks (flat terrain); default BallKick is right-footed.
+from .xgoduck_tricks_env_cfg import (
+    make_xgoduck_ball_kick_env_cfg, make_xgoduck_roulade_env_cfg,
+    make_xgoduck_roulade_angle_env_cfg,
+    XgoduckBallKickRlCfg, XgoduckBallKickLeftRlCfg, XgoduckRouladeRlCfg,
+    XgoduckRouladeAngleRlCfg,
+)
+
+for _task_id, _factory, _kwargs, _runner_cfg in (
+    ("Mjlab-BallKick-Flat-XgoDuck", make_xgoduck_ball_kick_env_cfg,
+     {"kick_foot": "right"}, XgoduckBallKickRlCfg),
+    ("Mjlab-BallKick-Left-Flat-XgoDuck", make_xgoduck_ball_kick_env_cfg,
+     {"kick_foot": "left"}, XgoduckBallKickLeftRlCfg),
+    ("Mjlab-Roulade-Flat-XgoDuck", make_xgoduck_roulade_env_cfg, {}, XgoduckRouladeRlCfg),
+    ("Mjlab-Roulade-Angle-Flat-XgoDuck", make_xgoduck_roulade_angle_env_cfg,
+     {}, XgoduckRouladeAngleRlCfg),
+):
+    register_mjlab_task(
+        task_id=_task_id,
+        env_cfg=_factory(**_kwargs),
+        play_env_cfg=_factory(play=True, **_kwargs),
+        rl_cfg=_runner_cfg,
+        runner_cls=MicroduckOnPolicyRunner,
+    )
+
+
+from .xgoduck_velocity_swizzle_env_cfg import (
+    XgoduckSwizzleRlCfg,
+    make_xgoduck_velocity_swizzle_env_cfg,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-Velocity-Swizzle-XgoDuck",
+    env_cfg=make_xgoduck_velocity_swizzle_env_cfg(),
+    play_env_cfg=make_xgoduck_velocity_swizzle_env_cfg(play=True),
+    rl_cfg=XgoduckSwizzleRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+
+from mjlab_microduck.play_hook import maybe_inject_latest_checkpoint
+
+# After all task ids are registered: `play TASK` with no checkpoint flag
+# picks the latest local model_*.pt. Explicit wandb/file flags still win.
+maybe_inject_latest_checkpoint()
