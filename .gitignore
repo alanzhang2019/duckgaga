@@ -41,3 +41,9 @@ logdir/.claude/worktrees/
 
 # Local smoke-test logs
 smoke*.log
+
+# Ship the final policies. The `*.pt` / `*.onnx` rules above exist to keep the
+# 31-checkpoint training ladder out of git, but the hand-picked finals under
+# checkpoints/ are meant to be here — see checkpoints/README.md.
+!checkpoints/**/*.pt
+!checkpoints/**/*.onnx
