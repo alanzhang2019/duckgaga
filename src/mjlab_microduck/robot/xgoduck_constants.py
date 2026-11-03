@@ -224,6 +224,27 @@ XGODUCK_STANDUP_ROBOT_CFG = EntityCfg(
     ),
 )
 
+# VelStand: the full-contact spec on the WALK plant.
+#
+# Both halves matter and they come from different cfgs on purpose:
+#   spec  = allcollisions, because the policy has to lie on / push off any link.
+#   plant = the walk one (walk HOME frame, 3-6 lag buffer, inherited 5 ms
+#           physics), because the policy is warm-started FROM the walk and the
+#           walk is the skill that must survive the recovery training.
+# XGODUCK_STANDUP_ROBOT_CFG would swap in the 4 ms / 1-lag standup plant, i.e.
+# delete 15-30 ms of command delay the walk policy was trained with. The stand
+# expert is only a label source for fallen frames, so it tolerates that shift;
+# the walk, which is the whole policy, does not.
+XGODUCK_VELSTAND_ROBOT_CFG = EntityCfg(
+    spec_fn=get_standup_spec,
+    init_state=XGODUCK_WALK_HOME_FRAME,
+    collisions=(XGODUCK_COLLISION,),
+    articulation=EntityArticulationInfoCfg(
+        actuators=(_walk_actuators,),
+        soft_joint_pos_limit_factor=0.9,
+    ),
+)
+
 # Match MicroDuck FULL_COLLISION: all named meshes collide with one another;
 # feet have frictional contacts, other links have normal-only contacts.
 XGODUCK_ROULADE_ROBOT_CFG = deepcopy(XGODUCK_STANDUP_ROBOT_CFG)

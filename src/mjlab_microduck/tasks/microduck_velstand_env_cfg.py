@@ -216,6 +216,8 @@ Phases (as before, but with a recovery backstop):
 """
 
 import math
+from dataclasses import dataclass
+from typing import Callable
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers import (
@@ -514,6 +516,78 @@ PRONE_RAMP_STAGES = [
 ]
 
 
+def _microduck_contact_sensors() -> tuple[ContactSensorCfg, ...]:
+    servo_ground_cfg = ContactSensorCfg(
+        name="servo_ground_contact",
+        primary=ContactMatch(mode="geom", pattern=rf"^.*{SERVO_GEOM_SUFFIX}$", entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+    head_ground_cfg = ContactSensorCfg(
+        name="head_ground_contact",
+        primary=ContactMatch(mode="body", pattern=rf"^({'|'.join(HEAD_BODY_NAMES)})$", entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+    trunk_ground_cfg = ContactSensorCfg(
+        name="trunk_ground_contact",
+        primary=ContactMatch(mode="body", pattern="^trunk_base$", entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+    return (servo_ground_cfg, head_ground_cfg, trunk_ground_cfg)
+
+
+@dataclass(frozen=True)
+class VelStandRobotProfile:
+    """The robot-specific numbers the recovery layer needs.
+
+    Every height below is an absolute trunk height, so the profile is what keeps
+    MicroDuck's 0.116 m and XgoDuck's 0.139 m from silently sharing a constant —
+    the same trap ``docs/XGODUCK.md`` records for ``STAND_Z`` (hardcoding one
+    robot's value misreports the other by 20%).
+    """
+
+    name: str
+    robot_cfg: object
+    make_contact_sensors: Callable[[], tuple[ContactSensorCfg, ...]]
+    nominal_z: float            # standing trunk z; body_pose z command is relative to it
+    height_ceiling: float       # height_progress clamps here (a completed stand)
+    com_max_height: float       # com_upward_velocity stops paying above this
+    recovered_up_z: float       # hysteresis: "genuinely up" for tax/bounty
+    term_gate_z: float          # fallen_too_long: z below this counts as fallen
+    head_gate_low: float        # head_pose_bias gates (droop only billed upright)
+    head_gate_high: float
+    prone_z_min: float          # spawn band for the prone slice
+    prone_z_max: float
+    sit_joint_overrides: dict   # sit keyframe, by servo index
+    yaw_remap: dict | None      # teacher-side yaw table; None = the anchor turns on its own
+
+
+MICRODUCK_VELSTAND_PROFILE = VelStandRobotProfile(
+    name="MicroDuck",
+    robot_cfg=MICRODUCK_ALLCOLLISIONS_ROBOT_CFG,
+    make_contact_sensors=_microduck_contact_sensors,
+    nominal_z=BODY_NOMINAL_Z,
+    height_ceiling=0.115,
+    com_max_height=0.125,
+    recovered_up_z=RECOVERED_UP_Z,
+    term_gate_z=TERM_GATE_Z,
+    head_gate_low=0.09,
+    head_gate_high=0.11,
+    prone_z_min=0.05,
+    prone_z_max=0.09,
+    sit_joint_overrides=SIT_JOINT_OVERRIDES,
+    yaw_remap=ANCHOR_YAW_REMAP if ENABLE_ANCHOR_YAW_REMAP else None,
+)
+
+
 def _collapse_curricula_to_final(cfg: ManagerBasedRlEnvCfg) -> None:
     """Warm start: pin every inherited velocity curriculum at its final stage.
 
@@ -544,7 +618,7 @@ def _body_ranges(frac: float) -> tuple[tuple[float, float], ...]:
     )
 
 
-def _add_body_control(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
+def _add_body_control(cfg: ManagerBasedRlEnvCfg, play: bool, nominal_z: float) -> None:
     """Standing-only body pose control (see ENABLE_BODY_CONTROL). Call AFTER the
     warm-start collapse: it replaces the inherited body_pose command/curriculum."""
     old = cfg.commands["body_pose"]
@@ -573,7 +647,7 @@ def _add_body_control(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
         weight=BODY_TRACK_WEIGHT,
         params={
             "command_name": "body_pose",
-            "nominal_height": BODY_NOMINAL_Z,
+            "nominal_height": nominal_z,
             "z_std": 0.01,
             "angle_std": math.radians(5),
             "axis_weights": (0.0, 0.0, 1.0, 1.0, 1.0, 0.0),
@@ -597,6 +671,20 @@ def _add_body_control(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
 def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> ManagerBasedRlEnvCfg:
     # Walk layer: the PROVEN velocity recipe, verbatim.
     cfg = make_microduck_velocity_env_cfg(play=play, rough=rough)
+    return add_velstand_layer(cfg, play=play, profile=MICRODUCK_VELSTAND_PROFILE)
+
+
+def add_velstand_layer(
+    cfg: ManagerBasedRlEnvCfg,
+    play: bool = False,
+    profile: VelStandRobotProfile = MICRODUCK_VELSTAND_PROFILE,
+) -> ManagerBasedRlEnvCfg:
+    """Add the protective-fall / recovery / body-control layer to a WALK cfg.
+
+    ``cfg`` must already be a finished walk recipe for the robot in ``profile``
+    (same rewards, same actuator model): the warm-started walk is the policy
+    being extended, and the second BC teacher is that exact checkpoint.
+    """
 
     # In play mode the curriculum doesn't run, so the fall-termination disable
     # below never fires — just delete the termination outright.
@@ -609,7 +697,7 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
         _collapse_curricula_to_final(cfg)
 
     if ENABLE_BODY_CONTROL:
-        _add_body_control(cfg, play)
+        _add_body_control(cfg, play, profile.nominal_z)
     if ENABLE_YAW_FIX:
         tw = cfg.commands["twist"]
         tw.rel_turn_in_place_envs = TURN_IN_PLACE_FRACTION_VELSTAND
@@ -619,7 +707,7 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
             weight=TRACK_YAW_FINE_WEIGHT,
             params={"std": TRACK_YAW_FINE_STD, "command_name": cfg.rewards["track_angular_velocity"].params["command_name"]},
         )
-    if ENABLE_ANCHOR_YAW_REMAP:
+    if profile.yaw_remap:
         assert not ENABLE_YAW_FIX, "the remap needs the turn frames ON the walk anchor"
         tw = cfg.commands["twist"]
         tw.rel_turn_in_place_envs = YAW_REMAP_TURN_IN_PLACE_FRACTION
@@ -632,36 +720,17 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
 
     # True full-collision model: the robot can lie on / push off any part, and
     # the servo housings are named so the impact sensor below can single them
-    # out. 70 collision geoms (vs 11) → more simultaneous contacts in a pile-up;
+    # out. 70 collision geoms (vs 11) -> more simultaneous contacts in a pile-up;
     # the rough-terrain nconmax (200) is the right budget here on flat too.
-    cfg.scene.entities = {"robot": MICRODUCK_ALLCOLLISIONS_ROBOT_CFG}
+    cfg.scene.entities = {"robot": profile.robot_cfg}
     cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 200)
 
-    servo_ground_cfg = ContactSensorCfg(
-        name="servo_ground_contact",
-        primary=ContactMatch(mode="geom", pattern=rf"^.*{SERVO_GEOM_SUFFIX}$", entity="robot"),
-        secondary=ContactMatch(mode="body", pattern="terrain"),
-        fields=("force",),
-        reduce="netforce",
-        num_slots=1,
-    )
-    head_ground_cfg = ContactSensorCfg(
-        name="head_ground_contact",
-        primary=ContactMatch(mode="body", pattern=rf"^({'|'.join(HEAD_BODY_NAMES)})$", entity="robot"),
-        secondary=ContactMatch(mode="body", pattern="terrain"),
-        fields=("force",),
-        reduce="netforce",
-        num_slots=1,
-    )
-    trunk_ground_cfg = ContactSensorCfg(
-        name="trunk_ground_contact",
-        primary=ContactMatch(mode="body", pattern="^trunk_base$", entity="robot"),
-        secondary=ContactMatch(mode="body", pattern="terrain"),
-        fields=("force",),
-        reduce="netforce",
-        num_slots=1,
-    )
-    cfg.scene.sensors = tuple(cfg.scene.sensors) + (servo_ground_cfg, head_ground_cfg, trunk_ground_cfg)
+    ground_sensors = profile.make_contact_sensors()
+    sensors_by_name = {s.name: s for s in ground_sensors}
+    servo_ground_cfg = sensors_by_name["servo_ground_contact"]
+    head_ground_cfg = sensors_by_name["head_ground_contact"]
+    trunk_ground_cfg = sensors_by_name["trunk_ground_contact"]
+    cfg.scene.sensors = tuple(cfg.scene.sensors) + tuple(ground_sensors)
 
     # velocity env's head_pose_bias flows in UNGATED (fine on a walk-only env —
     # fell_over terminates fallen episodes there). Velstand episodes SURVIVE
@@ -672,8 +741,8 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
     # the term prices exactly what it does in the velocity env — sustained droop while
     # actually standing/walking — and nothing during recovery.
     cfg.rewards["head_pose_bias"].params.update({
-        "gate_height_low":    0.09,
-        "gate_height_high":   0.11,
+        "gate_height_low":    profile.head_gate_low,
+        "gate_height_high":   profile.head_gate_high,
         "gate_tilt_full_deg": 20.0,
         "gate_tilt_zero_deg": REWARD_GATE_TILT_DEG,
     })
@@ -704,7 +773,7 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
         weight=30.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",)),
-            "ceiling": 0.115,
+            "ceiling": profile.height_ceiling,
         },
     )
     cfg.rewards["com_upward_velocity"] = RewardTermCfg(
@@ -715,7 +784,7 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
             # Height gate slightly above standing (standup uses 0.125) so the
             # rising reward keeps paying until fully up; the fallen gate is
             # what prevents gait-bounce farming, not this ceiling.
-            "max_height": 0.125,
+            "max_height": profile.com_max_height,
             # tilt-only gate: z=0.0 never triggers (see LESSON above)
             "gate_z_below": 0.0,
             "gate_tilt_above_deg": REWARD_GATE_TILT_DEG,
@@ -799,7 +868,7 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
             # zero-cost rest state. Arms only on tilt > 40°, so normal gait is
             # never taxed.
             "release_tilt_below_deg": RECOVERED_UP_TILT_DEG,
-            "release_z_above": RECOVERED_UP_Z,
+            "release_z_above": profile.recovered_up_z,
         },
     )
     # One-shot bounty on a COMPLETED recovery (fallen ≥0.5 s → genuinely up),
@@ -813,7 +882,7 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
             "fallen_tilt_deg": REWARD_GATE_TILT_DEG,
             "min_fallen_s": 0.5,
             "up_tilt_deg": RECOVERED_UP_TILT_DEG,
-            "up_z": RECOVERED_UP_Z,  # was 0.105 — unreachable, see constant note
+            "up_z": profile.recovered_up_z,  # was 0.105 — unreachable, see constant note
         },
     )
 
@@ -828,8 +897,8 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
             "prone_prob": 0.0,        # ramped by the prone_init_prob curriculum
             "face_down_prob": 1.0,
             "side_prob": PRONE_SIDE_PROB,
-            "prone_z_min": 0.05,
-            "prone_z_max": 0.09,
+            "prone_z_min": profile.prone_z_min,
+            "prone_z_max": profile.prone_z_max,
             "crouch_prob": 0.0,       # ramped by the prone_init_prob curriculum
             # Stand-up coverage (ENABLE_WIDE_SPAWNS). Not in the curriculum stages, so
             # event_param_curriculum's shallow merge leaves them as set here.
@@ -839,7 +908,7 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
                 "so3_prob": WIDE_SO3_PROB,
                 "sit_prob": WIDE_SIT_PROB,
                 "sit_params": {
-                    "sitting_joint_overrides": SIT_JOINT_OVERRIDES,
+                    "sitting_joint_overrides": profile.sit_joint_overrides,
                     "sitting_joint_noise_std": 0.15,
                     "sitting_tilt_max": math.radians(20),
                     "sitting_z_min": 0.06,
@@ -867,7 +936,7 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
         func=microduck_mdp.fallen_too_long,
         time_out=False,
         params={
-            "gate_z_below": TERM_GATE_Z,
+            "gate_z_below": profile.term_gate_z,
             "gate_tilt_above_deg": TERM_GATE_TILT_DEG,
             "max_duration_s": FALLEN_TIMEOUT_S,
         },
