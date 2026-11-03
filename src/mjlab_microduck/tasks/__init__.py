@@ -376,9 +376,22 @@ def _xgoduck_velocity_cfg(**kwargs):
     # at 0.34 m/s, 0.06 m/s of drift when told to stand). At 0.15 the same
     # 0.12 m/s error is worth 53% and keeps pushing.
     cfg.rewards["track_linear_velocity"].params["std"] = 0.15
-    # Same story for yaw: the inherited 0.707 still paid 49% at a 0.6 rad/s
-    # error, which is why the policy turned in place at half the commanded rate.
-    cfg.rewards["track_angular_velocity"].params["std"] = 0.4
+    # Yaw: leave the stock 0.707 ALONE and add a fine term beside it. Tightening
+    # the stock std is the obvious move and it backfires — a Gaussian has no
+    # gradient past its own std, so a 0.4 one is nearly flat at this policy's
+    # ~0.5 rad/s error. Measured here 2026-11-03 (1500 iters from model_2999):
+    # turn-in-place fell from 54% to 28% of the commanded rate while linear
+    # tracking improved. That is the same failure the velstand yaw dead-zone note
+    # records for a std-0.35 replacement (0.42 -> 0.16 rad/s). Keep the loose
+    # term's far-error gradient and let track_yaw_fine price the small errors.
+    cfg.rewards["track_yaw_fine"] = RewardTermCfg(
+        func=microduck_mdp.track_yaw_rate_fine,
+        weight=2.0,
+        params={
+            "std": 0.35,
+            "command_name": cfg.rewards["track_angular_velocity"].params["command_name"],
+        },
+    )
     cfg.rewards["foot_swing_height"].weight = -5.0
     # Keep the hips near HOME at low commanded speed, while allowing turns.
     cfg.rewards["hip_yaw_home"] = RewardTermCfg(

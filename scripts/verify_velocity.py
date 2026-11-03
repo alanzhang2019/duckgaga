@@ -44,6 +44,10 @@ def parse_args():
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--num-envs", type=int, default=32)
     p.add_argument("--steps", type=int, default=600, help="policy steps (50 Hz)")
+    p.add_argument("--seed", type=int, default=None,
+                   help="fix the command stream and the startup domain "
+                        "randomization so two checkpoints can be compared "
+                        "on identical inputs")
     p.add_argument("--warmup", type=int, default=50,
                    help="steps excluded from the stats (reset transient)")
     p.add_argument("--video", action="store_true")
@@ -106,6 +110,8 @@ def main():
     env_cfg = load_env_cfg(args.task, play=True)
     agent_cfg = load_rl_cfg(args.task)
     env_cfg.scene.num_envs = args.num_envs
+    if args.seed is not None:
+        env_cfg.seed = args.seed
     if args.video:
         env_cfg.viewer.height = args.video_height
         env_cfg.viewer.width = args.video_width

@@ -58,7 +58,7 @@ def test_walk_keeps_original_recipe_except_explicit_overrides():
     for kwargs in ({}, {"play": True}, {"rough": True}, {"rough": True, "play": True}):
         original = make_microduck_velocity_env_cfg(**kwargs)
         walk = _xgoduck_velocity_cfg(**kwargs)
-        assert set(walk.rewards) == set(original.rewards) | {"hip_yaw_home"}
+        assert set(walk.rewards) == set(original.rewards) | {"hip_yaw_home", "track_yaw_fine"}
         for name in original.rewards:
             if name not in ("pose", "track_linear_velocity", "foot_swing_height"):
                 assert walk.rewards[name].weight == pytest.approx(original.rewards[name].weight)
@@ -66,9 +66,13 @@ def test_walk_keeps_original_recipe_except_explicit_overrides():
         assert walk.rewards["track_linear_velocity"].params == {
             **original.rewards["track_linear_velocity"].params, "std": 0.15,
         }
-        # Tightened from the inherited 0.707 because 0.707 still paid 49% at the
-        # 0.6 rad/s yaw error the 3000-iteration run plateaued on.
-        assert walk.rewards["track_angular_velocity"].params["std"] == pytest.approx(0.4)
+        # The angular std must stay at the inherited 0.707: a tighter Gaussian
+        # has no gradient at this policy's error level, which is why turning got
+        # worse (54% -> 28% of commanded rate) when it was set to 0.4. Precision
+        # comes from the added track_yaw_fine term instead.
+        assert walk.rewards["track_angular_velocity"].params["std"] == pytest.approx(0.5 ** 0.5)
+        assert walk.rewards["track_yaw_fine"].params["std"] == pytest.approx(0.35)
+        assert walk.rewards["track_yaw_fine"].weight > 0
         assert original.rewards["track_linear_velocity"].weight == pytest.approx(2.0)
         assert original.rewards["track_linear_velocity"].params["std"] == pytest.approx(0.1 ** 0.5)
         assert original.rewards["track_angular_velocity"].params["std"] == pytest.approx(0.5 ** 0.5)
