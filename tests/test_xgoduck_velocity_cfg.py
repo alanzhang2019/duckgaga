@@ -64,10 +64,14 @@ def test_walk_keeps_original_recipe_except_explicit_overrides():
                 assert walk.rewards[name].weight == pytest.approx(original.rewards[name].weight)
         assert walk.rewards["track_linear_velocity"].weight == pytest.approx(3.0)
         assert walk.rewards["track_linear_velocity"].params == {
-            **original.rewards["track_linear_velocity"].params, "std": 0.25,
+            **original.rewards["track_linear_velocity"].params, "std": 0.15,
         }
+        # Tightened from the inherited 0.707 because 0.707 still paid 49% at the
+        # 0.6 rad/s yaw error the 3000-iteration run plateaued on.
+        assert walk.rewards["track_angular_velocity"].params["std"] == pytest.approx(0.4)
         assert original.rewards["track_linear_velocity"].weight == pytest.approx(2.0)
         assert original.rewards["track_linear_velocity"].params["std"] == pytest.approx(0.1 ** 0.5)
+        assert original.rewards["track_angular_velocity"].params["std"] == pytest.approx(0.5 ** 0.5)
         assert walk.rewards["foot_swing_height"].weight == pytest.approx(-5.0)
         assert original.rewards["foot_swing_height"].weight == pytest.approx(-0.25)
         for name in ("air_time", "foot_clearance", "foot_swing_height"):

@@ -370,7 +370,15 @@ def _xgoduck_velocity_cfg(**kwargs):
     actor["joint_pos"].noise.n_max = 0.01
     cfg.rewards["pose"].weight = 1.3
     cfg.rewards["track_linear_velocity"].weight = 3.0
-    cfg.rewards["track_linear_velocity"].params["std"] = 0.25
+    # 0.25 pays exp(-(0.12/0.25)^2) = 79% at the 0.12 m/s tracking error the
+    # 3000-iteration run plateaued on, so the gradient ran out while speed
+    # regulation was still soft (measured by verify_velocity.py: 22% undershoot
+    # at 0.34 m/s, 0.06 m/s of drift when told to stand). At 0.15 the same
+    # 0.12 m/s error is worth 53% and keeps pushing.
+    cfg.rewards["track_linear_velocity"].params["std"] = 0.15
+    # Same story for yaw: the inherited 0.707 still paid 49% at a 0.6 rad/s
+    # error, which is why the policy turned in place at half the commanded rate.
+    cfg.rewards["track_angular_velocity"].params["std"] = 0.4
     cfg.rewards["foot_swing_height"].weight = -5.0
     # Keep the hips near HOME at low commanded speed, while allowing turns.
     cfg.rewards["hip_yaw_home"] = RewardTermCfg(
