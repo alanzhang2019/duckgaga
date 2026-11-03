@@ -1,83 +1,180 @@
 --- git commit ---
-6707b23eb381e82d4109303a318d6d9a780fb315
+041d4497714ebeaa39f82f6009bc73f5a86675f7
 
 
 --- git status ---
 On branch xgoduck
-Your branch is ahead of 'duckgaga/xgoduck' by 1 commit.
+Your branch is ahead of 'duckgaga/xgoduck' by 2 commits.
   (use "git push" to publish your local commits)
+
+Changes to be committed:
+  (use "git restore --staged <file>..." to unstage)
+	deleted:    checkpoints/xgoduck_velocity/model_2999.pt
 
 Changes not staged for commit:
   (use "git add <file>..." to update what will be committed)
   (use "git restore <file>..." to discard changes in working directory)
-	modified:   docs/XGODUCK.md
+	modified:   checkpoints/xgoduck_velocity/params/agent.yaml
+	modified:   checkpoints/xgoduck_velocity/params/env.yaml
+	modified:   checkpoints/xgoduck_velocity/train.diff
+	modified:   checkpoints/xgoduck_velocity/xgoduck_velocity.onnx
 
 Untracked files:
   (use "git add <file>..." to include in what will be committed)
-	checkpoints/xgoduck_velocity/
-	scripts/verify_velocity.py
+	checkpoints/xgoduck_velocity/model_5497.pt
 
-no changes added to commit (use "git add" and/or "git commit -a")
+
 
 --- git diff ---
-diff --git a/docs/XGODUCK.md b/docs/XGODUCK.md
-index 31eb458..14f994b 100644
---- a/docs/XGODUCK.md
-+++ b/docs/XGODUCK.md
-@@ -119,6 +119,7 @@ the checkpoint into it, so resuming never overwrites the source run.
- |---|---|
- | `scripts/watch_run.py` | convergence report from tfevents: real s/iter, whether the task metrics are still moving, NaN check. Exit 0 keep going / 1 plateaued / 2 broken. |
- | `scripts/verify_standup.py` | measures trunk height and tilt from a trained policy and records a video. Reports a PASS/CHECK verdict. |
-+| `scripts/verify_velocity.py` | replays a velocity policy against the commands it was given and compares its tracking error to a **do-nothing baseline**. Reports a PASS/CHECK verdict. |
+diff --git a/checkpoints/xgoduck_velocity/params/agent.yaml b/checkpoints/xgoduck_velocity/params/agent.yaml
+index 4adc440..7661d0d 100644
+--- a/checkpoints/xgoduck_velocity/params/agent.yaml
++++ b/checkpoints/xgoduck_velocity/params/agent.yaml
+@@ -1,6 +1,6 @@
+ seed: 42
+ num_steps_per_env: 24
+-max_iterations: 800
++max_iterations: 1000
+ obs_groups:
+   actor: !!python/tuple
+   - actor
+@@ -13,8 +13,8 @@ logger: tensorboard
+ wandb_project: mjlab_microduck
+ wandb_tags: !!python/tuple []
+ resume: true
+-load_run: 2026-11-02_23-52-20_xgoduck
+-load_checkpoint: model_2200.pt
++load_run: 2026-11-03_09-18-16_xgoduck
++load_checkpoint: model_4498.pt
+ clip_actions: null
+ upload_model: false
+ class_name: OnPolicyRunner
+diff --git a/checkpoints/xgoduck_velocity/params/env.yaml b/checkpoints/xgoduck_velocity/params/env.yaml
+index a55016f..6692e9d 100644
+--- a/checkpoints/xgoduck_velocity/params/env.yaml
++++ b/checkpoints/xgoduck_velocity/params/env.yaml
+@@ -1612,7 +1612,7 @@ rewards:
+     func: !!python/name:mjlab.tasks.velocity.mdp.rewards.track_linear_velocity ''
+     params:
+       command_name: twist
+-      std: 0.25
++      std: 0.15
+     weight: 3.0
+   track_angular_velocity:
+     func: !!python/name:mjlab.tasks.velocity.mdp.rewards.track_angular_velocity ''
+@@ -1998,6 +1998,12 @@ rewards:
+       command_name: head_pose
+       tau_s: 1.0
+     weight: 0.0
++  track_yaw_fine:
++    func: !!python/name:mjlab_microduck.tasks.mdp.track_yaw_rate_fine ''
++    params:
++      std: 0.35
++      command_name: twist
++    weight: 2.0
+   hip_yaw_home:
+     func: !!python/name:mjlab_microduck.tasks.mdp.joint_pos_l1_when_standing ''
+     params:
+diff --git a/checkpoints/xgoduck_velocity/train.diff b/checkpoints/xgoduck_velocity/train.diff
+index 56f1d74..430645f 100644
+--- a/checkpoints/xgoduck_velocity/train.diff
++++ b/checkpoints/xgoduck_velocity/train.diff
+@@ -1,83 +1,28 @@
+ --- git commit ---
+-6707b23eb381e82d4109303a318d6d9a780fb315
++041d4497714ebeaa39f82f6009bc73f5a86675f7
  
- Both exist because the obvious approaches lie:
  
-@@ -131,6 +132,18 @@ Both exist because the obvious approaches lie:
- - The standing height is **task-specific** after retargeting. Read
-   `env_cfg.rewards["height_stand"].params["target_height"]`; hardcoding either
-   robot's value misreports the other by 20%.
-+- `Metrics/twist/error_vel_xy` is **not** in m/s. `UniformVelocityCommand`
-+  accumulates `‖cmd − v‖ / max_command_step` every step without dividing by the
-+  episode length, so the logged number is a per-`max_command_time` sum: an
-+  episode of 1000 steps at `resampling_time_range=(3, 8)` reports ~2.5x the
-+  per-step mean. Divide by `episode_steps / max_command_steps` before quoting
-+  it — or cross-check against the reward, which is per-step: with `std: 0.25`,
-+  `Episode_Reward/track_linear_velocity = 2.23` of 3.0 means
-+  `err = 0.25 * sqrt(-ln(2.23/3.0)) = 0.12 m/s`, i.e. a logged 0.296.
-+- A velocity error is only meaningful next to the **command magnitude**. This
-+  task commands `lin_vel_x ∈ ±0.4`, `lin_vel_y ∈ ±0.3`, so the mean command is
-+  ~0.17 m/s and a policy that ignores the command entirely still scores ~0.17.
-+  `verify_velocity.py` prints that baseline for exactly this reason.
+ --- git status ---
+ On branch xgoduck
+-Your branch is ahead of 'duckgaga/xgoduck' by 1 commit.
++Your branch is ahead of 'duckgaga/xgoduck' by 2 commits.
+   (use "git push" to publish your local commits)
  
- ## Tests
- 
-@@ -157,7 +170,28 @@ code ran, it just trained the wrong thing:
- | Policy | State |
- |---|---|
- | StandUp | **trained and verified** — [checkpoints/xgoduck_standup](../checkpoints/xgoduck_standup/) |
--| Velocity | trained in the pre-rebase fork, not yet re-run here |
-+| Velocity | trained to 3000 iters here; **walks stably, tracks speed softly** — see below |
++Changes to be committed:
++  (use "git restore --staged <file>..." to unstage)
++	deleted:    checkpoints/xgoduck_velocity/model_2999.pt
 +
-+### Velocity, measured
-+
-+3000 iterations at 4096 envs (3.1 s/iter, ~2.6 h total across two sittings).
-+`verify_velocity.py` on 32 envs x 550 steps, pushes active:
-+
-+```
-+height 0.141 m   tilt 2.4 deg   falls 0.0%
-+lin_xy err 0.123 m/s   vs do-nothing baseline 0.173   (+29%)
-+yaw      err 0.330 rad/s vs do-nothing baseline 0.374   (+12%)
-+cmd 0.34 -> 0.27 m/s (78%)   cmd 0.11 -> 0.14 (drift floor 0.06)
-+turn in place: wz 0.72 commanded -> 0.38 achieved
-+```
-+
-+So it stands, walks, and points the body in the commanded direction without
-+falling, but **regulates magnitude and yaw rate poorly** — half rate on turn-in-
-+place. The reward explains why it stopped there: `track_linear_velocity`
-+`std: 0.25` still pays 79% at the achieved 0.12 m/s error, and
-+`track_angular_velocity` `std: 0.707` pays 49% at a 0.6 rad/s error. Tightening
-+those two stds (0.15 / 0.4) and resuming is the cheap next step if this is to be
-+distilled into VelStand as a teacher.
- | SitStand, GroundPick, BallKick, Roulade, Swizzle | registered, smoke-tested, not trained |
+ Changes not staged for commit:
+   (use "git add <file>..." to update what will be committed)
+   (use "git restore <file>..." to discard changes in working directory)
+-	modified:   docs/XGODUCK.md
++	modified:   checkpoints/xgoduck_velocity/params/agent.yaml
++	modified:   checkpoints/xgoduck_velocity/params/env.yaml
++	modified:   checkpoints/xgoduck_velocity/train.diff
++	modified:   checkpoints/xgoduck_velocity/xgoduck_velocity.onnx
  
- **VelStand** (the velocity + stand-up distillation chain) is not ported yet, and
+ Untracked files:
+   (use "git add <file>..." to include in what will be committed)
+-	checkpoints/xgoduck_velocity/
+-	scripts/verify_velocity.py
++	checkpoints/xgoduck_velocity/model_5497.pt
++
+ 
+-no changes added to commit (use "git add" and/or "git commit -a")
+ 
+ --- git diff ---
+-diff --git a/docs/XGODUCK.md b/docs/XGODUCK.md
+-index 31eb458..14f994b 100644
+---- a/docs/XGODUCK.md
+-+++ b/docs/XGODUCK.md
+-@@ -119,6 +119,7 @@ the checkpoint into it, so resuming never overwrites the source run.
+- |---|---|
+- | `scripts/watch_run.py` | convergence report from tfevents: real s/iter, whether the task metrics are still moving, NaN check. Exit 0 keep going / 1 plateaued / 2 broken. |
+- | `scripts/verify_standup.py` | measures trunk height and tilt from a trained policy and records a video. Reports a PASS/CHECK verdict. |
+-+| `scripts/verify_velocity.py` | replays a velocity policy against the commands it was given and compares its tracking error to a **do-nothing baseline**. Reports a PASS/CHECK verdict. |
+- 
+- Both exist because the obvious approaches lie:
+- 
+-@@ -131,6 +132,18 @@ Both exist because the obvious approaches lie:
+- - The standing height is **task-specific** after retargeting. Read
+-   `env_cfg.rewards["height_stand"].params["target_height"]`; hardcoding either
+-   robot's value misreports the other by 20%.
+-+- `Metrics/twist/error_vel_xy` is **not** in m/s. `UniformVelocityCommand`
+-+  accumulates `‖cmd − v‖ / max_command_step` every step without dividing by the
+-+  episode length, so the logged number is a per-`max_command_time` sum: an
+-+  episode of 1000 steps at `resampling_time_range=(3, 8)` reports ~2.5x the
+-+  per-step mean. Divide by `episode_steps / max_command_steps` before quoting
+-+  it — or cross-check against the reward, which is per-step: with `std: 0.25`,
+-+  `Episode_Reward/track_linear_velocity = 2.23` of 3.0 means
+-+  `err = 0.25 * sqrt(-ln(2.23/3.0)) = 0.12 m/s`, i.e. a logged 0.296.
+-+- A velocity error is only meaningful next to the **command magnitude**. This
+-+  task commands `lin_vel_x ∈ ±0.4`, `lin_vel_y ∈ ±0.3`, so the mean command is
+-+  ~0.17 m/s and a policy that ignores the command entirely still scores ~0.17.
+-+  `verify_velocity.py` prints that baseline for exactly this reason.
+- 
+- ## Tests
+- 
+-@@ -157,7 +170,28 @@ code ran, it just trained the wrong thing:
+- | Policy | State |
+- |---|---|
+- | StandUp | **trained and verified** — [checkpoints/xgoduck_standup](../checkpoints/xgoduck_standup/) |
+--| Velocity | trained in the pre-rebase fork, not yet re-run here |
+-+| Velocity | trained to 3000 iters here; **walks stably, tracks speed softly** — see below |
+-+
+-+### Velocity, measured
+-+
+-+3000 iterations at 4096 envs (3.1 s/iter, ~2.6 h total across two sittings).
+-+`verify_velocity.py` on 32 envs x 550 steps, pushes active:
+-+
+-+```
+-+height 0.141 m   tilt 2.4 deg   falls 0.0%
+-+lin_xy err 0.123 m/s   vs do-nothing baseline 0.173   (+29%)
+-+yaw      err 0.330 rad/s vs do-nothing baseline 0.374   (+12%)
+-+cmd 0.34 -> 0.27 m/s (78%)   cmd 0.11 -> 0.14 (drift floor 0.06)
+-+turn in place: wz 0.72 commanded -> 0.38 achieved
+-+```
+-+
+-+So it stands, walks, and points the body in the commanded direction without
+-+falling, but **regulates magnitude and yaw rate poorly** — half rate on turn-in-
+-+place. The reward explains why it stopped there: `track_linear_velocity`
+-+`std: 0.25` still pays 79% at the achieved 0.12 m/s error, and
+-+`track_angular_velocity` `std: 0.707` pays 49% at a 0.6 rad/s error. Tightening
+-+those two stds (0.15 / 0.4) and resuming is the cheap next step if this is to be
+-+distilled into VelStand as a teacher.
+- | SitStand, GroundPick, BallKick, Roulade, Swizzle | registered, smoke-tested, not trained |
+- 
+- **VelStand** (the velocity + stand-up distillation chain) is not ported yet, and
+diff --git a/checkpoints/xgoduck_velocity/xgoduck_velocity.onnx b/checkpoints/xgoduck_velocity/xgoduck_velocity.onnx
+index 30606bf..d022f9f 100644
+Binary files a/checkpoints/xgoduck_velocity/xgoduck_velocity.onnx and b/checkpoints/xgoduck_velocity/xgoduck_velocity.onnx differ

@@ -170,28 +170,32 @@ code ran, it just trained the wrong thing:
 | Policy | State |
 |---|---|
 | StandUp | **trained and verified** — [checkpoints/xgoduck_standup](../checkpoints/xgoduck_standup/) |
-| Velocity | trained to 3000 iters here; **walks stably, tracks speed softly** — see below |
+| Velocity | **trained and verified** — [checkpoints/xgoduck_velocity](../checkpoints/xgoduck_velocity/) |
 
 ### Velocity, measured
 
-3000 iterations at 4096 envs (3.1 s/iter, ~2.6 h total across two sittings).
-`verify_velocity.py` on 32 envs x 550 steps, pushes active:
+5498 iterations over three sittings at 4096 envs.
+`verify_velocity.py` on 32 envs x 550 steps, pushes active, `--seed 7`:
 
 ```
-height 0.141 m   tilt 2.4 deg   falls 0.0%
-lin_xy err 0.123 m/s   vs do-nothing baseline 0.173   (+29%)
-yaw      err 0.330 rad/s vs do-nothing baseline 0.374   (+12%)
-cmd 0.34 -> 0.27 m/s (78%)   cmd 0.11 -> 0.14 (drift floor 0.06)
-turn in place: wz 0.72 commanded -> 0.38 achieved
+height 0.140 m   tilt 2.7 deg   falls 0.0%
+lin_xy err 0.119 m/s   vs do-nothing baseline 0.183   (+35%)
+yaw      err 0.270 rad/s vs do-nothing baseline 0.335   (+20%)
+cmd 0.345 -> 0.275 m/s (80%)   drift when told to stand 0.047 m/s
+turn in place: wz 0.71 commanded -> 0.53 (75%)
 ```
 
-So it stands, walks, and points the body in the commanded direction without
-falling, but **regulates magnitude and yaw rate poorly** — half rate on turn-in-
-place. The reward explains why it stopped there: `track_linear_velocity`
-`std: 0.25` still pays 79% at the achieved 0.12 m/s error, and
-`track_angular_velocity` `std: 0.707` pays 49% at a 0.6 rad/s error. Tightening
-those two stds (0.15 / 0.4) and resuming is the cheap next step if this is to be
-distilled into VelStand as a teacher.
+It stands, walks and turns without ever falling, and tracks speed to within
+~20% of the command. The remaining softness is a capacity limit, not a tuning
+leftover: linear and yaw tracking trade off against each other and against
+`head_pose_tracking`, which reaches 1.82 of its 2.0 weight.
+
+Two reward lessons from getting here are recorded in that checkpoint's README:
+tightening `track_linear_velocity` std 0.25 → 0.15 is what unlocked the speed
+regulation, and tightening `track_angular_velocity` std 0.707 → 0.4 is what
+broke turning — a Gaussian has no gradient past its own std, and
+`track_yaw_rate_fine`'s docstring already documented that exact failure. Add a
+fine term instead of sharpening the coarse one.
 | SitStand, GroundPick, BallKick, Roulade, Swizzle | registered, smoke-tested, not trained |
 
 **VelStand** (the velocity + stand-up distillation chain) is not ported yet, and
