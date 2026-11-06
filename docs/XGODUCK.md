@@ -120,6 +120,8 @@ the checkpoint into it, so resuming never overwrites the source run.
 | `scripts/watch_run.py` | convergence report from tfevents: real s/iter, whether the task metrics are still moving, NaN check. Exit 0 keep going / 1 plateaued / 2 broken. |
 | `scripts/verify_standup.py` | measures trunk height and tilt from a trained policy and records a video. Reports a PASS/CHECK verdict. |
 | `scripts/verify_velocity.py` | replays a velocity policy against the commands it was given and compares its tracking error to a **do-nothing baseline**. Reports a PASS/CHECK verdict. |
+| `scripts/verify_velstand.py` | measures walk and fall-recovery separately, because a VelStand log mixes them: walk tracking vs the do-nothing baseline (pushes off), then 12 s prone-start recovery rate per spawn orientation. |
+| `scripts/play_teleop.py` | keyboard teleop in the native viewer: arrows for vx/vy, `a`/`d` for yaw, `space` stop, `t` freeze. Works on Windows (`msvcrt`) and POSIX (`termios`). |
 
 Both exist because the obvious approaches lie:
 
@@ -144,6 +146,32 @@ Both exist because the obvious approaches lie:
   task commands `lin_vel_x ∈ ±0.4`, `lin_vel_y ∈ ±0.3`, so the mean command is
   ~0.17 m/s and a policy that ignores the command entirely still scores ~0.17.
   `verify_velocity.py` prints that baseline for exactly this reason.
+
+### Watching a policy run
+
+```bash
+.venv/Scripts/play.exe Mjlab-VelStand-Flat-XgoDuck \
+  --checkpoint-file logs/rsl_rl/xgoduck_velstand/<run>/model_2999.pt \
+  --num-envs 8 --viewer native
+```
+
+Startup takes ~2.5 min (MuJoCo Warp loads its kernels) and the log stops moving
+while it does — that is not a hang. `--viewer viser` gives a browser UI instead.
+
+`train` has **no live window**: the sim is GPU-batched over 1024-4096 envs and
+the viewer can only render one. Use `--video --video-interval N` to get mp4
+segments during training, or open `play` on an intermediate `model_XXXX.pt`.
+
+Keyboard: `play` itself has no robot control. Its window bindings are playback
+only (Enter reset, Space pause, `-`/`=` speed, `,`/`.` env, `P` plots, `R` debug
+vis, `A` show-all, Right single-step) and the arrow keys are already taken. Real
+teleop lives in `scripts/infer_policy.py`, which is POSIX-only, so on Windows use
+`scripts/play_teleop.py` — it reads keys from the terminal rather than the viewer
+window and writes the velocity command straight into the command manager
+(resampling and heading control are disabled for the run, otherwise the sampled
+command overwrites the keyboard every 3-8 s). Run it from PowerShell, Windows
+Terminal or cmd; mintty / Git Bash has no Win32 console, so `msvcrt` cannot see
+the keys there and the script says so.
 
 ## Tests
 
