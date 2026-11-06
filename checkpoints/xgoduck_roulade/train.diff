@@ -1,0 +1,24 @@
+--- git commit ---
+3c67019  "Trigger the roll from the keyboard as a policy switch"
+
+--- git status ---
+clean — src/ and tests/ identical to the commit above
+(the only untracked file at training time was scripts/verify_roulade.py, which
+is a measurement script and does not enter the training path)
+
+--- git diff ---
+(empty)
+
+--- note ---
+Trained on a clean tree at 3c67019. params/env.yaml here is exactly what
+trained this policy, and the MicroDuck roulade recipe it retargets is unchanged
+since the fork point.
+
+    unset MICRODUCK_WARM_START     # fresh task: no teacher to inherit from
+    .venv/Scripts/python.exe -u -m mjlab.scripts.train \
+      Mjlab-Roulade-Flat-XgoDuck --env.scene.num-envs 2048 \
+      --agent.max_iterations 6000 --agent.save-interval 250
+
+2048, not 4096: the all-collisions MJCF needs 2.5 GB of EPA convex buffers at
+4096, and 2048 on an 8 GB card trips WDDM paging (7719/8188 MiB, 40 s/iter).
+2048 sits at 4121 MiB / 2.7 s/iter. See docs/XGODUCK.md.
