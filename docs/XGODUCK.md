@@ -173,6 +173,26 @@ command overwrites the keyboard every 3-8 s). Run it from PowerShell, Windows
 Terminal or cmd; mintty / Git Bash has no Win32 console, so `msvcrt` cannot see
 the keys there and the script says so.
 
+The teleop writes the command to **every** env, while the viewer renders one at
+a time (the `1/4` in its corner; `,`/`.` switches). Use `--num-envs 1` unless you
+want a group.
+
+It also defaults `--push none`, and that matters: `play` leaves `topple_push` at
+the curriculum's **final** value (+-1.2 m/s of trunk velocity every 0.5-1 s), so
+what it shows is a push-recovery demo, not a walk demo — the robot spends its
+time being knocked over and getting back up, which reads as random tumbling.
+Same checkpoint, 1500 steps, `--cmd 0 0 0`:
+
+| `--push` | height | tilt | upright | travelled |
+|---|---|---|---|---|
+| `topple` (what `play` does) | 0.1174 m | 37.1 deg | 33% | 0.77 m |
+| `none` (default) | 0.1392 m | 2.8 deg | 98% | 0.53 m |
+
+and walking at `--cmd 0.3 0 0` with pushes off: 0.27 m/s achieved, 98% upright.
+`--prone` starts every env on the floor so the get-up is visible (93% upright
+over 10 s including the rise); it drops `so3_prob`, because a uniform random
+orientation is past upside-down half the time and those take up to 7.6 s.
+
 ## Tests
 
 ```bash

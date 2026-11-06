@@ -194,6 +194,11 @@ class Teleop:
 
     def __init__(self, policy, env, num_envs: int, device):
         self.policy = policy
+        self.robot = env.scene["robot"]
+        self.zs: list[float] = []
+        self.tilts: list[float] = []
+        self.odo = 0.0
+        self._prev_xy: torch.Tensor | None = None
         self.cmd = env.command_manager.get_term("twist")
         self.hold = [env.command_manager.get_term(n)
                      for n in ("head_pose", "body_pose")
@@ -244,8 +249,30 @@ class Teleop:
         self.cmd.command[:] = self._tensor
         for term in self.hold:
             term.command[:] = 0.0
+        self._record_posture()
         self._last = self.policy(obs)
         return self._last
+
+    def _record_posture(self) -> None:
+        """Trunk height and tilt from qpos.
+
+        Not from `root_link_pos_w` / `root_link_quat_w`: those read `xpos` /
+        `xquat`, which only `sim.forward()` refreshes, so they lag the state
+        being measured by one step at best and lie outright right after a reset.
+        """
+        idx = self.robot.data.indexing
+        qpos = self.robot.data.data.qpos
+        quat = qpos[:, idx.free_joint_q_adr[3:7]]
+        cos_tilt = 1.0 - 2.0 * (quat[:, 1] ** 2 + quat[:, 2] ** 2)
+        self.zs.append(float(qpos[:, idx.free_joint_q_adr[2]].mean()))
+        self.tilts.append(float(torch.rad2deg(torch.acos(cos_tilt.clamp(-1, 1))).mean()))
+        # Odometer, not displacement: the episode times out every 20 s and the
+        # reset teleports the robot back to its origin, so "how far is it from
+        # where it started" reads ~0 for a robot that walked the whole episode.
+        xy = qpos[:, idx.free_joint_q_adr[0:2]].clone()
+        if self._prev_xy is not None:
+            self.odo += float((xy - self._prev_xy).norm(dim=-1).mean())
+        self._prev_xy = xy
 
 
 def parse_args():
@@ -259,6 +286,13 @@ def parse_args():
     p.add_argument("--no-keys", action="store_true",
                    help="do not read the keyboard at all")
     p.add_argument("--frame-rate", type=float, default=60.0)
+    p.add_argument("--push", choices=("none", "push", "topple"), default="none",
+                   help="external disturbances. 'topple' is what `play` does — it "
+                        "runs the curriculum's FINAL value (+-1.2 m/s of trunk "
+                        "velocity every 0.5-1 s), which knocks the robot over "
+                        "constantly and hides the walking entirely")
+    p.add_argument("--prone", action="store_true",
+                   help="start every env on the floor, to watch the get-up")
     p.add_argument("--cmd", type=float, nargs=3, default=(0.0, 0.0, 0.0),
                    metavar=("VX", "VY", "WZ"),
                    help="command to start from, so a headless run can prove the "
@@ -293,6 +327,28 @@ def main():
     if hasattr(twist, "heading_command"):
         twist.heading_command = False
         twist.ranges.heading = None
+
+    # `play` leaves both disturbance events on, and topple_push is at the
+    # curriculum FINAL: 1.2 m/s of trunk velocity every 0.5-1 s. The teacher
+    # itself reads 0.080 m / 68.7 deg in that environment, so it is not a walk
+    # demo, it is a push-recovery demo. Default to off.
+    if args.push == "none":
+        env_cfg.events.pop("topple_push", None)
+        env_cfg.events.pop("push_robot", None)
+    elif args.push == "push":
+        env_cfg.events.pop("topple_push", None)
+    if args.prone:
+        # The share is written by a curriculum term every step, so setting the
+        # event param alone is undone at the first reset.
+        env_cfg.curriculum.pop("prone_init_prob", None)
+        prone = env_cfg.events["random_prone_init"].params
+        prone["prone_prob"] = 1.0
+        prone["crouch_prob"] = 0.0
+        prone["sit_prob"] = 0.0
+        # so3 spawns a uniform random orientation, ~half of which are past
+        # upside-down; those are the slowest recoveries (p90 7.6 s against a
+        # 12 s window) and would just look like a stuck robot in a demo.
+        prone["so3_prob"] = 0.0
 
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     vec_env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
@@ -334,18 +390,23 @@ def main():
     # The viewer wants the WRAPPED env: it calls env.get_observations() and
     # env.step(), which are the rsl_rl VecEnv API, not ManagerBasedRlEnv's.
     viewer = NativeMujocoViewer(vec_env, teleop, frame_rate=args.frame_rate)
-    robot = env.scene["robot"]
-    start_xy = robot.data.root_link_pos_w[:, :2].clone()
     try:
         viewer.run(num_steps=args.max_steps)
     finally:
         stop.set()
         if reader is not None:
             reader.__exit__(None, None, None)
-        moved = (robot.data.root_link_pos_w[:, :2] - start_xy).norm(dim=-1)
-        print(f"[teleop] cmd {teleop.target}  ->  trunk moved"
-              f" {moved.mean():.3f} m mean ({moved.max():.3f} m max)"
-              f" over {viewer._step_count} steps")
+        steps = max(viewer._step_count, 1)
+        print(f"[teleop] cmd {teleop.target}  ->  travelled {teleop.odo:.2f} m"
+              f" over {steps} steps = {teleop.odo / (steps * env.step_dt):.2f} m/s"
+              f" mean speed")
+        if teleop.zs:
+            zs = torch.tensor(teleop.zs)
+            tilts = torch.tensor(teleop.tilts)
+            print(f"[teleop] posture  height {zs.mean():.4f} m mean"
+                  f" (min {zs.min():.4f})   tilt {tilts.mean():.1f} deg"
+                  f" (max {tilts.max():.1f})   upright"
+                  f" {100.0 * (tilts < 25).float().mean():.0f}% of steps")
         vec_env.close()
     return 0
 
