@@ -121,7 +121,8 @@ the checkpoint into it, so resuming never overwrites the source run.
 | `scripts/verify_standup.py` | measures trunk height and tilt from a trained policy and records a video. Reports a PASS/CHECK verdict. |
 | `scripts/verify_velocity.py` | replays a velocity policy against the commands it was given and compares its tracking error to a **do-nothing baseline**. Reports a PASS/CHECK verdict. |
 | `scripts/verify_velstand.py` | measures walk and fall-recovery separately, because a VelStand log mixes them: walk tracking vs the do-nothing baseline (pushes off), then 12 s prone-start recovery rate per spawn orientation. |
-| `scripts/play_teleop.py` | keyboard teleop in the native viewer: arrows for vx/vy, `a`/`d` for yaw, `space` stop, `t` freeze. Works on Windows (`msvcrt`) and POSIX (`termios`). |
+| `scripts/verify_roulade.py` | measures a roll in **degrees**: reads the same rotation accumulator the rewards read, from a standstill standing spawn, and compares against `model_0.pt` and a zero-action policy so a stumble cannot pass as a roll. |
+| `scripts/play_teleop.py` | keyboard teleop in the native viewer: arrows for vx/vy, `a`/`d` for yaw, `space` stop, `r` roll (with `--roulade`), `t` freeze. Works on Windows (`msvcrt`) and POSIX (`termios`). |
 
 Both exist because the obvious approaches lie:
 
@@ -193,16 +194,37 @@ and walking at `--cmd 0.3 0 0` with pushes off: 0.27 m/s achieved, 98% upright.
 over 10 s including the rise); it drops `so3_prob`, because a uniform random
 orientation is past upside-down half the time and those take up to 7.6 s.
 
+`--roulade <ckpt>` loads a **second** actor and binds `r` to it:
+
+```bash
+play_teleop.cmd "" "" --roulade checkpoints\xgoduck_roulade\model_5999.pt
+```
+
+Pressing `r` hands the action stream to the roll actor for
+`--roulade-duration` seconds (default 2.5) with the velocity command forced to
+zero, then hands it back. It is a policy switch, not a command: the roulade
+task is episodic and has no phase input, so "start rolling" can only mean
+"let the other actor drive for a while". That is legal because every XgoDuck
+task shares the same 61-D actor observation, and because the roll was trained
+with the twist command pinned to ±0.01 m/s — i.e. exactly the zero the switch
+writes. Measured end to end: tilt 1° → 171° → 2° in 1.2 s, then standing at
+0.7° for the rest of the window, then back to walking.
+
 ## Tests
 
 ```bash
-uv run --with pytest python -m pytest tests/ -q
-# 379 passed, 1 skipped
+PATH="$PWD/.venv/Scripts:$PATH" .venv/Scripts/python.exe -m pytest tests/ -q
+# 397 passed, 1 skipped
 ```
 
-105 of those cover XgoDuck specifically (12 `tests/test_xgoduck_*.py` files).
-Three of them caught **silent** regressions that a smoke test cannot see — the
-code ran, it just trained the wrong thing:
+`PATH` matters for one test: `test_hf_jobs_flag.py` asserts that `train` is
+resolvable and is mjlab's, and an unactivated venv has no `train` on PATH, so
+running the interpreter by absolute path alone reports a false failure.
+
+161 of those cover XgoDuck and the teleop specifically (13
+`tests/test_xgoduck_*.py` files plus `test_velstand_cfg.py` and
+`test_play_teleop.py`). Three of them caught **silent** regressions that a
+smoke test cannot see — the code ran, it just trained the wrong thing:
 
 - `VelocityCommandCommandOnlyCfg.rel_backward_envs` was removed upstream, so
   setting the attribute succeeded and was ignored: 15% reverse practice quietly
@@ -219,6 +241,9 @@ code ran, it just trained the wrong thing:
 |---|---|
 | StandUp | **trained and verified** — [checkpoints/xgoduck_standup](../checkpoints/xgoduck_standup/) |
 | Velocity | **trained and verified** — [checkpoints/xgoduck_velocity](../checkpoints/xgoduck_velocity/) |
+| VelStand | **trained and verified** — [checkpoints/xgoduck_velstand](../checkpoints/xgoduck_velstand/) |
+| Roulade | **trained and verified** — [checkpoints/xgoduck_roulade](../checkpoints/xgoduck_roulade/) |
+| SitStand, GroundPick, BallKick, Swizzle | registered, smoke-tested, not trained |
 
 ### Velocity, measured
 
@@ -244,15 +269,55 @@ regulation, and tightening `track_angular_velocity` std 0.707 → 0.4 is what
 broke turning — a Gaussian has no gradient past its own std, and
 `track_yaw_rate_fine`'s docstring already documented that exact failure. Add a
 fine term instead of sharpening the coarse one.
-| SitStand, GroundPick, BallKick, Roulade, Swizzle | registered, smoke-tested, not trained |
 
-**VelStand** (the velocity + stand-up distillation chain) is not ported yet, and
-it is not a registration away:
+### VelStand, measured
 
-- Upstream's `microduck_velstand_env_cfg.py` is a 1005-line BC distillation
-  pipeline needing a walking teacher, a get-up teacher and `distill.py`.
-- XgoDuck's all-collisions MJCF has no **named servo shell geoms**, so
-  `servo_impact` / `servo_stall` costs have nothing to attach to; the fork's
-  StandUp uses `self_collisions` as a proxy instead.
-- The get-up teacher *is* the StandUp policy, so the order is StandUp → export
-  `alpha_stand.onnx` → VelStand. The first step is now done.
+The velocity recipe plus fall recovery, warm-started from the Velocity teacher,
+3000 iterations at 1024 envs. `verify_velstand.py` splits the two skills and
+measures each in a clean environment, 48 envs, `--seed 7`:
+
+| | Velocity teacher | VelStand |
+|---|---|---|
+| lin_xy error | 0.116 m/s | 0.116 m/s |
+| yaw error | 0.236 rad/s | 0.243 rad/s |
+| upright steps | 98% | 100% |
+| recovery from prone | 21% | **90%** (0.63 s mean) |
+
+The rise skill is nearly free: identical linear tracking, 0.007 rad/s of yaw,
+and it stands more cleanly than the teacher. Face-down recovers 100%, face-up
+88%, side 83% — side is slowest because the first move is a quarter roll onto
+the front. Full detail in that checkpoint's README.
+
+Two things this task taught, both about measurement rather than training:
+
+- `Metrics/twist/error_vel_xy` accumulates over the episode and is not divided
+  by its length, so with `prone_init_prob` at 0.45 it measures floor time, not
+  tracking. It read 0.617 for a policy that tracks to 0.116 m/s.
+- `play` leaves `topple_push` at its curriculum final — 1.2 m/s of trunk
+  velocity every 0.5–1 s. The Velocity teacher itself reads 0.080 m / 68.7° in
+  that environment, so it is a push-tolerance demo, not a walk demo.
+  `play_teleop.py` therefore defaults to `--push none`.
+
+### Roulade, measured
+
+One sitting, 6000 iterations at 2048 envs (2.7 s/iter, 4.1 GB), converged at
+~2750. `verify_roulade.py` drives it from a standing spawn at standstill and
+reads the rotation accumulator the rewards read, in degrees:
+
+```
+rotation     frontier 349 deg mean (min 333, max 365)   100% past 260 deg
+head latch   100%   (head-top touched ground inside 20-170 deg)
+final        height 0.1389 m (100% of nominal)   tilt 0.4 deg   standing 100%
+time to gate 0.78 s mean        displacement 0.41 m
+```
+
+Against `model_0.pt` (9°) and zero actions (3°), so the reward shaped the roll
+rather than a fall producing it. Pressing `r` in `play_teleop.py` hands the
+action stream to this actor for 2.5 s: tilt 1° → 171° → 2° in 1.2 s, then
+standing at 0.7° for the rest of the window, then back to the walk actor.
+
+The `roulade_progress: 0.93` in the training log is the metric most likely to
+be misread — it is a per-step average of paid radians over 2π, so 0.93 means
+~0.73 rad/s × 7 s ≈ 294° per episode, not "93% of a roll". The conversion is
+written out in that checkpoint's README.
+

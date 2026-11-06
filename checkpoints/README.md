@@ -11,6 +11,9 @@ If you need the intermediate ladder, retrain or use a release asset.
 | Policy | Task | Status |
 |---|---|---|
 | [xgoduck_standup](xgoduck_standup/) | `Mjlab-StandUp-Flat-XgoDuck` | verified — stands 99.5% of target height, 2.3 deg tilt |
+| [xgoduck_velocity](xgoduck_velocity/) | `Mjlab-Velocity-Flat-XgoDuck` | verified — +35% over do-nothing on lin_xy, +20% on yaw |
+| [xgoduck_velstand](xgoduck_velstand/) | `Mjlab-VelStand-Flat-XgoDuck` | verified — walks like the teacher, recovers from prone 90% |
+| [xgoduck_roulade](xgoduck_roulade/) | `Mjlab-Roulade-Flat-XgoDuck` | verified — 349 deg mean rotation, lands standing 100% |
 
 ## Why plain git and not Git LFS
 
