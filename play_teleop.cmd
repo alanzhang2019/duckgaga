@@ -7,7 +7,8 @@ rem   play_teleop.cmd "" "" --max-steps 20  extra args are forwarded
 rem   play_teleop.cmd "" "" --num-envs 4    a group instead of a single robot
 rem   play_teleop.cmd "" "" --prone         start on the floor, watch the get-up
 rem   play_teleop.cmd "" "" --push topple   put the 1.2 m/s shoves back on
-rem   play_teleop.cmd "" "" --roulade <ckpt>  press r to roll
+rem   play_teleop.cmd "" "" --roulade checkpoints\xgoduck_roulade\model_5999.pt
+rem                                          press r to roll
 rem
 rem Keys go to THIS window, not the viewer: up/down=vx, left/right=vy,
 rem a/d=yaw, space=stop, r=roll (with --roulade), t=freeze, q=quit.
@@ -18,7 +19,7 @@ set "TASK=%~1"
 if "%TASK%"=="" set "TASK=Mjlab-VelStand-Flat-XgoDuck"
 
 set "CKPT=%~2"
-if "%CKPT%"=="" set "CKPT=logs\rsl_rl\xgoduck_velstand\2026-11-03_16-18-33_xgoduck\model_2999.pt"
+if "%CKPT%"=="" set "CKPT=checkpoints\xgoduck_velstand\model_2999.pt"
 
 if not exist "%CKPT%" (
   echo [teleop] checkpoint not found: %CKPT%

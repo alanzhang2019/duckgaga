@@ -1,0 +1,22 @@
+--- git commit ---
+bbbec10  "Give XgoDuck a VelStand task, by making the layer robot-agnostic"
+
+--- git status ---
+clean — src/ and tests/ identical to the commit above
+
+--- git diff ---
+(empty)
+
+--- note ---
+Trained on a clean tree at bbbec10. The commits after it (4e5df0a, ec78e3c,
+080935d, 3c67019) touch only scripts/play_teleop*, scripts/verify_velstand.py,
+tests/test_play_teleop.py and docs — no env cfg, reward, event or curriculum
+changed — so params/env.yaml here is still exactly what trained this policy.
+
+    unset MICRODUCK_WARM_START     # same-task warm start: keep the step counter
+    .venv/Scripts/python.exe -u -m mjlab.scripts.train \
+      Mjlab-VelStand-Flat-XgoDuck --env.scene.num-envs 1024 \
+      --agent.max_iterations 3000 --agent.save-interval 100 \
+      --agent.resume True \
+      --agent.load-run warmstart_velocity_5497_xgoduck \
+      --agent.load-checkpoint model_5497.pt

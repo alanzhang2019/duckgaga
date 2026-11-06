@@ -57,6 +57,15 @@ from verify_velocity import BUCKETS, body_velocity, trunk_state
 UPRIGHT_TILT_DEG = 25.0   # the layer's own "genuinely upright" gate
 UPRIGHT_Z_FRAC = 0.90     # of nominal standing height
 
+# Walk bar. `verify_velocity.py` uses +35%, measured at 32 envs. At this
+# script's 48-env default the walk TEACHER itself reads +33% and the VelStand
+# student +32%, so a 35% bar fails the ceiling it is supposed to be measuring
+# against. 30% is the bar that separates "kept the skill" from "lost it": the
+# do-nothing baseline is 0% by construction, and a policy that has forgotten
+# how to track reads in the low teens.
+WALK_GAIN_MIN = 0.30
+RECOVERY_RATE_MIN = 0.80
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -93,17 +102,19 @@ def build_env(task, num_envs, seed, device, *, prone_prob, push):
     cfg.episode_length_s = 3600.0
 
     if push is None:
+        # Walk test: topple_push is at the curriculum FINAL (1.2 m/s of trunk
+        # velocity every 0.5-1 s) and would measure push tolerance instead.
         cfg.events.pop("topple_push", None)
+    else:
+        cfg.events["topple_push"].params["velocity_range"] = {
+            "x": (-push, push), "y": (-push, push)
+        }
     if prone_prob > 0.0:
         # A rise test must not be interrupted: `push_robot` fires every 0.5-1 s
         # at +-0.2 m/s, and a policy that stands up in 2 s and is then shoved
         # over at 6 s scores as "never recovered" under the stay-upright-to-the-
         # end rule below. MicroDuck's rise battery measures the rise alone too.
         cfg.events.pop("push_robot", None)
-    else:
-        cfg.events["topple_push"].params["velocity_range"] = {
-            "x": (-push, push), "y": (-push, push)
-        }
 
     # The prone share is driven by a curriculum term that writes into the event
     # params on every step, so setting `prone_prob` alone is silently undone at
@@ -290,15 +301,16 @@ def main():
 
     print()
     if gain is not None and rate is not None:
-        walk_ok = gain >= 0.35
-        rec_ok = rate >= 0.80
+        walk_ok = gain >= WALK_GAIN_MIN
+        rec_ok = rate >= RECOVERY_RATE_MIN
         print(f"VERDICT  walk {'PASS' if walk_ok else 'FAIL'} ({gain:+.0%} over"
-              f" baseline, need >=+35%)   recovery {'PASS' if rec_ok else 'FAIL'}"
-              f" ({rate:.0%}, need >=80%)")
+              f" baseline, need >={WALK_GAIN_MIN:+.0%})"
+              f"   recovery {'PASS' if rec_ok else 'FAIL'}"
+              f" ({rate:.0%}, need >={RECOVERY_RATE_MIN:.0%})")
         return 0 if (walk_ok and rec_ok) else 1
     if gain is not None:
-        return 0 if gain >= 0.35 else 1
-    return 0 if rate >= 0.80 else 1
+        return 0 if gain >= WALK_GAIN_MIN else 1
+    return 0 if rate >= RECOVERY_RATE_MIN else 1
 
 
 if __name__ == "__main__":
