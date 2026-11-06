@@ -33,6 +33,7 @@ Keyboard (type in the terminal you launched from, NOT the viewer window):
   left / right   lin_vel_y  +- 0.1 m/s   (clamped to +-0.3)
   a / d          ang_vel_z  -+ 0.2 rad/s (clamped to +-1.0)
   space          zero the command (stand)
+  r              trigger the roll (needs --roulade)
   t              toggle the policy (freeze / resume the motors)
   q              quit
 
@@ -192,8 +193,19 @@ class Teleop:
     perceptible and keeps the env/command API untouched.
     """
 
-    def __init__(self, policy, env, num_envs: int, device):
+    def __init__(self, policy, env, num_envs: int, device, roulade=None,
+                 roulade_steps: int = 0):
         self.policy = policy
+        # The roll is a POLICY SWITCH, not a command: the roulade task is
+        # episodic and has no phase input, so "start rolling" means "hand the
+        # action stream to the roll actor for N steps, then hand it back".
+        # Both actors take the same 61D observation (the roll task keeps the
+        # walk layout), which is what makes the switch legal at all.
+        self.roulade = roulade
+        self.roulade_steps = roulade_steps
+        self._roll_left = 0
+        self.roll_at = None
+        self.steps = 0
         self.robot = env.scene["robot"]
         self.zs: list[float] = []
         self.tilts: list[float] = []
@@ -227,6 +239,13 @@ class Teleop:
             self.target[2] = max(self.target[2] - WZ_STEP, -WZ_MAX)
         elif key == " ":
             self.target[:] = [0.0, 0.0, 0.0]
+        elif key == "r":
+            if self.roulade is None:
+                print("[teleop] no roll policy loaded (--roulade <ckpt>)")
+            else:
+                self._roll_left = self.roulade_steps
+                print(f"[teleop] rolling for {self.roulade_steps} steps")
+            return True
         elif key == "t":
             self.enabled = not self.enabled
             print(f"[teleop] policy {'ON' if self.enabled else 'OFF (frozen)'}")
@@ -250,6 +269,20 @@ class Teleop:
         for term in self.hold:
             term.command[:] = 0.0
         self._record_posture()
+        if self.roll_at is not None and self.steps == self.roll_at:
+            self._roll_left = self.roulade_steps
+            print(f"[teleop] rolling for {self.roulade_steps} steps")
+        self.steps += 1
+        if self._roll_left > 0:
+            self._roll_left -= 1
+            # The roll was trained with a zero twist command, and it would be
+            # steering a body that is upside down otherwise.
+            self._tensor.zero_()
+            self.cmd.command[:] = self._tensor
+            self._last = self.roulade(obs)
+            if self._roll_left == 0:
+                print("[teleop] roll finished, back to walking")
+            return self._last
         self._last = self.policy(obs)
         return self._last
 
@@ -293,6 +326,13 @@ def parse_args():
                         "constantly and hides the walking entirely")
     p.add_argument("--prone", action="store_true",
                    help="start every env on the floor, to watch the get-up")
+    p.add_argument("--roulade", default=None,
+                   help="checkpoint of a roll (roulade) actor to switch to on `r`")
+    p.add_argument("--roulade-duration", type=float, default=2.5,
+                   help="seconds the roll actor owns the actions (default 2.5; "
+                        "the roll task's episode is 7 s and the roll itself ~2 s)")
+    p.add_argument("--roll-at", type=int, default=None,
+                   help="trigger the roll automatically at step N (headless test)")
     p.add_argument("--cmd", type=float, nargs=3, default=(0.0, 0.0, 0.0),
                    metavar=("VX", "VY", "WZ"),
                    help="command to start from, so a headless run can prove the "
@@ -358,7 +398,23 @@ def main():
     policy = runner.get_inference_policy(device=device)
     print(f"[teleop] checkpoint {ckpt.name}   {args.num_envs} envs   {device}")
 
-    teleop = Teleop(policy, env, args.num_envs, device)
+    roll_policy = None
+    if args.roulade:
+        roll_ckpt = Path(args.roulade).resolve()
+        if not roll_ckpt.exists():
+            raise FileNotFoundError(roll_ckpt)
+        # A SECOND runner, not a reload of the first: both actors have to stay
+        # resident so the switch is a branch, not a disk read.
+        roll_runner = runner_cls(vec_env, asdict(agent_cfg), device=device)
+        roll_runner.load(str(roll_ckpt), load_cfg={"actor": True}, strict=True,
+                         map_location=device)
+        roll_policy = roll_runner.get_inference_policy(device=device)
+        print(f"[teleop] roll actor {roll_ckpt.name} "
+              f"({args.roulade_duration:.1f} s per press)")
+
+    teleop = Teleop(policy, env, args.num_envs, device, roulade=roll_policy,
+                    roulade_steps=max(1, round(args.roulade_duration / env.step_dt)))
+    teleop.roll_at = args.roll_at
     teleop.target[:] = list(args.cmd)
 
     reader = None

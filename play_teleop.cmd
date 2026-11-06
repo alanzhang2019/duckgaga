@@ -7,9 +7,10 @@ rem   play_teleop.cmd "" "" --max-steps 20  extra args are forwarded
 rem   play_teleop.cmd "" "" --num-envs 4    a group instead of a single robot
 rem   play_teleop.cmd "" "" --prone         start on the floor, watch the get-up
 rem   play_teleop.cmd "" "" --push topple   put the 1.2 m/s shoves back on
+rem   play_teleop.cmd "" "" --roulade <ckpt>  press r to roll
 rem
 rem Keys go to THIS window, not the viewer: up/down=vx, left/right=vy,
-rem a/d=yaw, space=stop, t=freeze, q=quit.
+rem a/d=yaw, space=stop, r=roll (with --roulade), t=freeze, q=quit.
 setlocal
 cd /d "%~dp0"
 
